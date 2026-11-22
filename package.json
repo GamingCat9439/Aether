@@ -1,0 +1,16 @@
+{
+  "name": "aether",
+  "productName": "Aether",
+  "version": "1.0.0",
+  "description": "A local Lua workspace and executor bridge for Aether",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^39.0.0"
+  },
+  "allowScripts": {
+    "electron@39.8.10": true
+  }
+}
