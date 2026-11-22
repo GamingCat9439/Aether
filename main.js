@@ -31,7 +31,8 @@ const EXTERNAL_HOSTS = new Set([
 
 const DEFAULTS = {
   theme: 'graphite',
-  accent: '#7c9cff',
+  displayName: '',
+  accent: '#ffffff',
   glow: true,
   motion: true,
   compact: false,
@@ -84,9 +85,13 @@ function mergeConfig(input) {
   const editor = source.editor && typeof source.editor === 'object' ? source.editor : {};
   const bridge = source.bridge && typeof source.bridge === 'object' ? source.bridge : {};
   const base = runtime.config || DEFAULTS;
+  const displayName = typeof source.displayName === 'string'
+    ? source.displayName.trim().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 40)
+    : base.displayName;
 
   return {
     theme: THEMES.has(source.theme) ? source.theme : base.theme,
+    displayName,
     accent: ACCENT_RE.test(String(source.accent || '')) ? source.accent : base.accent,
     glow: bool(source.glow, base.glow),
     motion: bool(source.motion, base.motion),
@@ -108,8 +113,16 @@ function mergeConfig(input) {
   };
 }
 
+// The accent used to default to this blue. Saved settings that still hold it are moved
+// to the new white default, because the old default cannot be told apart from a choice.
+const LEGACY_ACCENT = '#7c9cff';
+
 function loadConfig() {
-  runtime.config = mergeConfig(readJson('config.json', {}));
+  const stored = readJson('config.json', {});
+  if (String(stored?.accent || '').toLowerCase() === LEGACY_ACCENT) {
+    stored.accent = DEFAULTS.accent;
+  }
+  runtime.config = mergeConfig(stored);
   return runtime.config;
 }
 
@@ -120,12 +133,13 @@ function saveConfig(next) {
 }
 
 function userInfo() {
-  let username = '';
+  let windowsUsername = '';
   try {
-    username = os.userInfo().username || '';
+    windowsUsername = os.userInfo().username || '';
   } catch {
-    username = process.env.USERNAME || process.env.USER || 'user';
+    windowsUsername = process.env.USERNAME || process.env.USER || 'user';
   }
+  windowsUsername = windowsUsername || 'user';
 
   let hostname = '';
   try {
@@ -135,7 +149,8 @@ function userInfo() {
   }
 
   return {
-    username: username || 'user',
+    windowsUsername,
+    username: runtime.config.displayName || windowsUsername,
     hostname,
     platform: process.platform,
   };
@@ -274,6 +289,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width,
     height,
+    icon: path.join(__dirname, 'assets', 'app-icon.png'),
     minWidth: 1000,
     minHeight: 680,
     frame: false,

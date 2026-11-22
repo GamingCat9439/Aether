@@ -1,30 +1,83 @@
 -- Aether bridge
--- Paste this into your executor and run it once per session.
+-- Paste this into your executor and run it once per session. No reconnect retries.
 -- The desktop app must be open and listening on the port below.
 
 local ENDPOINT = "ws://127.0.0.1:__PORT__/bridge"
-local RETRY_SECONDS = 3
 local SILENCE_LIMIT = 90
 local LOADER_VERSION = 2
+
+-- For automatic reload after Roblox teleports, host this complete Lua file
+-- somewhere reachable over HTTPS and paste its RAW URL here.
+-- Leave empty if you will use your executor's Auto Execute feature instead.
+local LOADER_URL = ""
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 
 local compiler = loadstring or load
 if type(compiler) ~= "function" then
-    if rconsolewarn then
-        pcall(rconsolewarn, "Aether: this executor does not expose loadstring/load.")
-    end
     return
 end
 
-local function notify(message)
-    local text = "Aether: " .. tostring(message)
-    if rconsoleprint then
-        pcall(rconsoleprint, text)
-    elseif print then
-        pcall(print, text)
+-- Intentionally silent: do not write bridge status messages to the executor console.
+local function notify(_message)
+    -- No-op.
+end
+
+
+-- Queue a small bootstrapper for the next Roblox teleport. The bootstrapper
+-- fetches this same bridge file and runs it in the destination place.
+local function queueForTeleport()
+    if type(LOADER_URL) ~= "string" or LOADER_URL == "" then
+        return false, "LOADER_URL is not configured"
     end
+
+    local queuedCode = string.format([[
+local url = %q
+local ok, source = pcall(function()
+    return game:HttpGet(url)
+end)
+if not ok or type(source) ~= "string" or source == "" then
+    return
+end
+local compile = loadstring or load
+if type(compile) ~= "function" then
+    return
+end
+local chunk, compileError = compile(source)
+if not chunk then
+    return
+end
+local ran, runtimeError = pcall(chunk)
+-- Startup failures are intentionally silent in the executor console.
+]], LOADER_URL)
+
+    local candidates = {}
+    if type(queue_on_teleport) == "function" then
+        candidates[#candidates + 1] = queue_on_teleport
+    end
+    if type(queueonteleport) == "function" then
+        candidates[#candidates + 1] = queueonteleport
+    end
+    pcall(function()
+        if type(syn) == "table" and type(syn.queue_on_teleport) == "function" then
+            candidates[#candidates + 1] = syn.queue_on_teleport
+        end
+    end)
+    pcall(function()
+        if type(fluxus) == "table" and type(fluxus.queue_on_teleport) == "function" then
+            candidates[#candidates + 1] = fluxus.queue_on_teleport
+        end
+    end)
+
+    for _, queueFunction in ipairs(candidates) do
+        local ok = pcall(queueFunction, queuedCode)
+        if ok then
+            return true
+        end
+    end
+
+    return false, "this executor does not expose a supported teleport-queue function"
 end
 
 -- Keep a single loader instance alive when the script is executed more than once.
@@ -153,18 +206,50 @@ local function executorName()
     return "Unknown"
 end
 
-local gameName = tostring(game.Name or "")
-if gameName == "" or gameName == "Game" then
-    gameName = "Place " .. tostring(game.PlaceId)
+-- LocalPlayer can briefly be nil when an executor starts very early.
+-- Wait for Roblox to populate it instead of reporting a fabricated "Player".
+local function waitForLocalPlayer(timeoutSeconds)
+    local deadline = os.clock() + (timeoutSeconds or 20)
+    repeat
+        local ok, player = pcall(function()
+            return Players.LocalPlayer
+        end)
+        if ok and player then
+            return player
+        end
+        if not active() then
+            return nil
+        end
+        task.wait(0.25)
+    until os.clock() >= deadline
+    return nil
 end
 
-local localPlayer = Players.LocalPlayer
+local localPlayer = nil
 local activeSend = nil
 local capturing = false
 
 -- Reuse the original print/warn so re-running the loader does not nest wrappers.
 local originalPrint = shared.__AETHER_ORIGINAL_PRINT__ or print
 local originalWarn = shared.__AETHER_ORIGINAL_WARN__ or warn
+
+-- Retire this loader after a disconnect. A fresh manual/auto-execute run can
+-- start it again, but this instance will never keep retrying in the background.
+local function retireLoader()
+    if not active() then
+        return
+    end
+
+    shared.__AETHER_BRIDGE_V1__ = nil
+
+    -- Restore the original functions so the inactive bridge leaves no wrappers behind.
+    pcall(function()
+        print = originalPrint
+        warn = originalWarn
+    end)
+    shared.__AETHER_ORIGINAL_PRINT__ = nil
+    shared.__AETHER_ORIGINAL_WARN__ = nil
+end
 
 pcall(function()
     shared.__AETHER_ORIGINAL_PRINT__ = originalPrint
@@ -311,9 +396,7 @@ local function runSession(socket)
         elseif message.type == "disconnect" then
             -- An explicit disconnect from the desktop app retires this loader.
             -- Re-run the loader to reconnect.
-            if active() then
-                shared.__AETHER_BRIDGE_V1__ = nil
-            end
+            retireLoader()
             stop()
         end
     end
@@ -324,15 +407,19 @@ local function runSession(socket)
         type = "hello",
         protocol = 1,
         loader = LOADER_VERSION,
-        game = gameName,
+        -- The server resolves the canonical experience title from Roblox's
+        -- public APIs. Do not treat game.Name as the experience title.
+        game = "",
         placeId = game.PlaceId,
+        universeId = game.GameId,
         jobId = game.JobId,
-        player = localPlayer and localPlayer.Name or "Player",
-        displayName = localPlayer and localPlayer.DisplayName or "Player",
+        player = localPlayer and localPlayer.Name or "Unknown player",
+        displayName = localPlayer and localPlayer.DisplayName or "Unknown player",
         executor = executorName(),
     }
 
     if not send(hello) then
+        retireLoader()
         stop()
         return
     end
@@ -343,25 +430,27 @@ local function runSession(socket)
             level = "error",
             message = "Aether could not bind to the WebSocket message event. This executor's WebSocket API is not compatible with the loader.",
         })
-        task.wait(0.25)
-        if active() then
-            shared.__AETHER_BRIDGE_V1__ = nil
-        end
+        retireLoader()
         stop()
         return
     end
 
     attach(socket, { "OnClose", "onClose" }, function()
+        retireLoader()
         closed = true
     end)
 
     attach(socket, { "OnError", "onError" }, function()
+        retireLoader()
         closed = true
     end)
 
     while not closed and active() do
-        task.wait(0.25)
+        -- A one-second check is enough for the silence timeout and uses fewer
+        -- wake-ups than the previous 0.25-second polling loop.
+        task.wait(1)
         if os.clock() - lastInbound > SILENCE_LIMIT then
+            retireLoader()
             stop()
         end
     end
@@ -370,23 +459,33 @@ local function runSession(socket)
         activeSend = nil
     end
     closeSocket(socket)
+
+    -- Any way out of a live session is terminal for this loader instance.
+    retireLoader()
 end
 
-local failures = 0
+local queued, queueError = queueForTeleport()
+if queued then
+    notify("Bridge queued for the next teleport.")
+elseif LOADER_URL == "" then
+    notify("Teleport reload is not configured. Use your executor's Auto Execute feature for new-game joins.")
+else
+    notify("Teleport reload unavailable: " .. tostring(queueError))
+end
 
-while active() do
-    local socket, err = openSocket()
+-- Resolve the local username before connecting so the desktop app does not
+-- receive the generic fallback merely because the executor started early.
+if active() then
+    localPlayer = waitForLocalPlayer(20)
+end
+
+-- Connect exactly once. If Aether is offline, closes the socket, or the
+-- connection fails, retire this loader instead of retrying and consuming game resources.
+if active() then
+    local socket = openSocket()
     if socket then
-        failures = 0
         runSession(socket)
     else
-        failures = failures + 1
-        if failures == 1 or failures % 20 == 0 then
-            notify(err)
-        end
-    end
-
-    if active() then
-        task.wait(RETRY_SECONDS)
+        retireLoader()
     end
 end

@@ -8,9 +8,9 @@
    -------------------------------------------------------------------------- */
 
 :root {
-  --accent: #7c9cff;
-  --accent-rgb: 124, 156, 255;
-  --accent-contrast: #ffffff;
+  --accent: #ffffff;
+  --accent-rgb: 255, 255, 255;
+  --accent-contrast: #0a0b0d;
 
   --bg: #0a0b0d;
   --bg-soft: #0d0f12;
@@ -465,10 +465,11 @@ html[data-motion="on"] .page.active {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
-.brand-mark svg {
-  width: 16px;
-  height: 16px;
+.brand-mark img {
+  width: 27px;
+  height: 27px;
   display: block;
+  transform: translateY(0.4px);
 }
 
 .brand-name {
@@ -1767,10 +1768,10 @@ html[data-theme="paper"] .hero-side {
   min-height: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--panel);
-  background: color-mix(in srgb, var(--panel) 48%, transparent);
-  backdrop-filter: blur(24px) saturate(1.12);
-  -webkit-backdrop-filter: blur(24px) saturate(1.12);
+  /* No tint of its own. The window already tints everything by about 83%, and every
+     extra translucent layer stacked on top of that hides the acrylic blur behind it.
+     The explorer and console keep their own tint; the editor is the open pane. */
+  background: transparent;
   overflow: hidden;
 }
 
@@ -1786,6 +1787,7 @@ html[data-theme="paper"] .hero-side {
 }
 
 .doc-tabs {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 3px;
@@ -1797,11 +1799,41 @@ html[data-theme="paper"] .hero-side {
   scrollbar-width: none;
 }
 
+/* One pill shared by every tab. It glides to the active tab instead of each tab
+   switching its own background on and off. */
+
+.tab-indicator {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  z-index: 0;
+  box-sizing: border-box;
+  height: 31px;
+  margin-top: -15.5px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--elev);
+  box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 0.26s cubic-bezier(0.22, 0.82, 0.2, 1),
+    width 0.26s cubic-bezier(0.22, 0.82, 0.2, 1),
+    opacity 0.2s ease;
+  will-change: transform, width;
+}
+
+.tab-indicator.instant {
+  transition: none;
+}
+
 .doc-tabs::-webkit-scrollbar {
   display: none;
 }
 
 .doc-tab {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1814,6 +1846,7 @@ html[data-theme="paper"] .hero-side {
   border-radius: 7px;
   color: var(--muted);
   user-select: none;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
 }
 
 .doc-tab:hover {
@@ -1821,9 +1854,15 @@ html[data-theme="paper"] .hero-side {
   color: var(--text-soft);
 }
 
-.doc-tab.active {
-  border-color: var(--line);
-  background: var(--elev);
+.doc-tab:active {
+  transform: scale(0.985);
+}
+
+/* The active tab draws no background of its own; .tab-indicator sits underneath it. */
+
+.doc-tab.active,
+.doc-tab.active:hover {
+  background: transparent;
   color: var(--text);
 }
 
@@ -1834,12 +1873,14 @@ html[data-theme="paper"] .hero-side {
   border-radius: 50%;
   background: var(--faint);
   opacity: 0.55;
+  transition: background 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .tab-dot.on {
   background: var(--warn);
   opacity: 1;
   box-shadow: 0 0 0 2px rgba(227, 181, 115, 0.12);
+  transform: scale(1.2);
 }
 
 .tab-name {
@@ -1868,6 +1909,11 @@ html[data-theme="paper"] .hero-side {
 .tab-close .icon {
   width: 11px;
   height: 11px;
+  transition: transform 0.2s cubic-bezier(0.22, 0.82, 0.2, 1);
+}
+
+.tab-close:hover .icon {
+  transform: rotate(90deg);
 }
 
 .doc-tab:hover .tab-close,
@@ -1895,6 +1941,11 @@ html[data-theme="paper"] .hero-side {
 .tab-add .icon {
   width: 13px;
   height: 13px;
+  transition: transform 0.22s cubic-bezier(0.22, 0.82, 0.2, 1);
+}
+
+.tab-add:hover .icon {
+  transform: rotate(90deg);
 }
 
 .tab-add:hover {
@@ -1973,11 +2024,13 @@ html[data-theme="paper"] .run-btn .kbd {
   display: flex;
   flex: 1;
   min-height: 0;
-  background: var(--code-bg);
+  /* Only light highlights and no base colour by default, so the blurred window shows
+     through. Raise --editor-tint (for example to 20%) to darken the editor again. */
+  --editor-tint: 0%;
   background:
     radial-gradient(115% 90% at 82% -24%, rgba(var(--accent-rgb), 0.075), transparent 56%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 150px),
-    color-mix(in srgb, var(--code-bg) 54%, transparent);
+    color-mix(in srgb, var(--code-bg) var(--editor-tint), transparent);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
   overflow: hidden;
   transition: box-shadow 0.28s ease;
@@ -1986,15 +2039,15 @@ html[data-theme="paper"] .run-btn .kbd {
 .editor-panel:focus-within .editor-stage {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.045),
-    inset 0 0 0 1px rgba(var(--accent-rgb), 0.12),
-    inset 0 -90px 120px -110px rgba(var(--accent-rgb), 0.28);
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.1),
+    inset 0 -90px 120px -110px rgba(var(--accent-rgb), 0.14);
 }
 
 html[data-theme="paper"] .editor-stage {
   background:
     radial-gradient(115% 90% at 82% -24%, rgba(var(--accent-rgb), 0.05), transparent 56%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.3), transparent 150px),
-    color-mix(in srgb, var(--code-bg) 74%, transparent);
+    color-mix(in srgb, var(--code-bg) var(--editor-tint), transparent);
 }
 
 .editor-gutter {
@@ -3382,6 +3435,35 @@ html[data-motion="on"] .settings-section.active {
   flex: 0 0 auto;
   align-self: flex-start;
   margin-top: 2px;
+}
+
+.profile-name-row {
+  align-items: center;
+}
+
+.profile-name-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.text-input {
+  width: 190px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: none;
+  background: var(--elev);
+  color: var(--text);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.text-input:focus {
+  border-color: rgba(var(--accent-rgb), 0.68);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.10);
 }
 
 .setting-group {

@@ -18,6 +18,10 @@ npm start
 
 The app has no build step. Electron loads `renderer/index.html` directly, and the bridge starts with the app on `127.0.0.1:7963` by default.
 
+## Package for Windows
+
+Run `npm run dist` to build the Windows NSIS installer. The app uses `assets/app-icon.svg` in the titlebar, `assets/app-icon.png` for its window/taskbar icon, and `assets/app-icon.ico` for the packaged Windows executable and installer.
+
 ## Connect an executor
 
 1. Open Aether and click the bridge pill in the titlebar (or open **Settings → Connection**).
@@ -52,6 +56,7 @@ The port is configurable under **Settings → Connection**. The loader embeds th
 | `bridge.js` | Dependency-free RFC 6455 WebSocket server on loopback |
 | `bridge-script.lua` | Loader pasted into the executor; handles reconnect, logs, results |
 | `hub-providers.js` | ScriptBlox / RobloxScripts fetching, normalisation and cache |
+| `assets/app-icon.svg`, `assets/app-icon.png`, `assets/app-icon.ico` | App branding for the UI, window and Windows packaging |
 | `renderer/index.html` | Application shell and views |
 | `renderer/app.js` | Application state, hub, library, clients, console |
 | `renderer/editor.js` | Lua tokenizer, editor surface, shortcuts |

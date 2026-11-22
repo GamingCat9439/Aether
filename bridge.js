@@ -6,12 +6,18 @@
 
 const http = require('http');
 const crypto = require('crypto');
+const https = require('https');
 const { EventEmitter } = require('events');
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const MAX_MESSAGE = 2 * 1024 * 1024;
 const MAX_BUFFER = MAX_MESSAGE + 64 * 1024;
-const STALE_AFTER = 5 * 60 * 1000;
+// A connected client must answer application-level pings. This detects
+// half-open sockets and frozen/disconnected executor bridges much sooner.
+const HANDSHAKE_TIMEOUT = 30 * 1000;
+const HEARTBEAT_INTERVAL = 5 * 1000;
+const HEARTBEAT_TIMEOUT = 15 * 1000;
+const HEARTBEAT_TICK = 1 * 1000;
 
 const OP = { CONT: 0x0, TEXT: 0x1, BINARY: 0x2, CLOSE: 0x8, PING: 0x9, PONG: 0xa };
 
@@ -47,6 +53,51 @@ function logTime() {
   return Date.now();
 }
 
+// Small, bounded HTTPS JSON request helper for Roblox's public metadata APIs.
+// These lookups are only used to label the connected client; failure falls back
+// to a truthful Place ID instead of displaying a made-up experience name.
+function requestJson(url) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(
+      url,
+      {
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'AetherBridge/1.0',
+        },
+      },
+      (response) => {
+        let body = '';
+        response.setEncoding('utf8');
+
+        response.on('data', (chunk) => {
+          body += chunk;
+          if (Buffer.byteLength(body, 'utf8') > 256 * 1024) {
+            request.destroy(new Error('Roblox metadata response was too large'));
+          }
+        });
+
+        response.on('end', () => {
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            reject(new Error(`Roblox metadata request failed (${response.statusCode})`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(body));
+          } catch {
+            reject(new Error('Roblox returned invalid metadata JSON'));
+          }
+        });
+      },
+    );
+
+    request.setTimeout(5000, () => {
+      request.destroy(new Error('Roblox metadata request timed out'));
+    });
+    request.on('error', reject);
+  });
+}
+
 class BridgeServer extends EventEmitter {
   constructor() {
     super();
@@ -57,6 +108,7 @@ class BridgeServer extends EventEmitter {
     this.clients = new Map();
     this.seq = 1;
     this.heartbeat = null;
+    this.experienceNameLookups = new Map();
   }
 
   get running() {
@@ -211,6 +263,8 @@ class BridgeServer extends EventEmitter {
       alive: true,
       verified: false,
       verifyTimer: null,
+      lastPingAt: 0,
+      pingSentAt: null,
     };
 
     this.sessions.add(session);
@@ -352,6 +406,51 @@ class BridgeServer extends EventEmitter {
     }
   }
 
+  async #resolveExperienceName(placeId, suppliedUniverseId) {
+    const safePlaceId = Number.isSafeInteger(placeId) && placeId > 0 ? placeId : 0;
+    const safeUniverseId = Number.isSafeInteger(suppliedUniverseId) && suppliedUniverseId > 0
+      ? suppliedUniverseId
+      : 0;
+    if (!safePlaceId && !safeUniverseId) return null;
+
+    const cacheKey = `${safePlaceId}:${safeUniverseId}`;
+    const existing = this.experienceNameLookups.get(cacheKey);
+    if (existing) return existing;
+
+    const lookup = (async () => {
+      let universeId = safeUniverseId;
+
+      // Place ID -> Universe ID (public, unauthenticated Roblox endpoint).
+      if (!universeId && safePlaceId) {
+        const placeInfo = await requestJson(
+          `https://apis.roblox.com/universes/v1/places/${safePlaceId}/universe`,
+        );
+        universeId = Number(placeInfo && placeInfo.universeId) || 0;
+      }
+
+      if (!Number.isSafeInteger(universeId) || universeId <= 0) return null;
+
+      // Universe ID -> canonical Roblox experience name.
+      const gameInfo = await requestJson(
+        `https://games.roblox.com/v1/games?universeIds=${universeId}`,
+      );
+      const entries = gameInfo && Array.isArray(gameInfo.data) ? gameInfo.data : [];
+      const exact = entries.find((entry) => Number(entry && entry.id) === universeId);
+      const name = exact && typeof exact.name === 'string' ? exact.name.trim() : '';
+      return name ? name.slice(0, 80) : null;
+    })();
+
+    this.experienceNameLookups.set(cacheKey, lookup);
+    try {
+      const name = await lookup;
+      if (!name) this.experienceNameLookups.delete(cacheKey);
+      return name;
+    } catch {
+      this.experienceNameLookups.delete(cacheKey);
+      return null;
+    }
+  }
+
   #onText(session, text) {
     let message;
     try {
@@ -363,15 +462,44 @@ class BridgeServer extends EventEmitter {
 
     switch (message.type) {
       case 'hello': {
-        const game = clampText(message.game, 80) || 'Unknown game';
-        const player = clampText(message.player, 40) || 'Player';
+        // Accept the standard camelCase fields and common casing variants so
+        // older executor builds cannot silently lose the Roblox IDs.
+        const rawPlaceId = message.placeId ?? message.placeID ?? message.PlaceId ?? message.PlaceID;
+        const rawUniverseId = message.universeId ?? message.universeID ?? message.GameId ?? message.gameId;
+        const placeIdValue = Number(rawPlaceId);
+        const universeIdValue = Number(rawUniverseId);
+        const placeId = Number.isSafeInteger(placeIdValue) && placeIdValue > 0 ? placeIdValue : 0;
+        const universeId = Number.isSafeInteger(universeIdValue) && universeIdValue > 0 ? universeIdValue : 0;
+        const rawPlayer = clampText(message.player, 40);
+        const player = rawPlayer && rawPlayer.toLowerCase() !== 'player'
+          ? rawPlayer
+          : 'Unknown player';
+        const rawDisplayName = clampText(message.displayName, 40);
+        const displayName = rawDisplayName && rawDisplayName.toLowerCase() !== 'player'
+          ? rawDisplayName
+          : player;
+        // Only use an explicit experienceName as the client-resolved title.
+        // Otherwise show the factual Place ID instead of an ambiguous game.Name.
+        const rawExperienceName = typeof message.experienceName === 'string'
+          ? message.experienceName
+          : '';
+        const rawGameLabel = typeof message.game === 'string' ? message.game : '';
+        const suppliedTitle = clampText(rawExperienceName, 80).trim();
+        const fallbackLabel = clampText(rawGameLabel, 80).trim();
+        const isPlaceholder = (value) => !value
+          || /^(game|unknown game|place)$/i.test(value)
+          || /^place\s+\d+$/i.test(value);
+        const usableTitle = !isPlaceholder(suppliedTitle) ? suppliedTitle : '';
+        const usableFallback = !isPlaceholder(fallbackLabel) ? fallbackLabel : '';
+        const game = usableTitle || (placeId ? `Place ${placeId}` : usableFallback || 'Unknown game');
         const meta = {
           id: session.id,
           game,
-          placeId: Number(message.placeId) || 0,
+          placeId,
+          universeId,
           jobId: clampText(message.jobId, 64),
           player,
-          displayName: clampText(message.displayName, 40) || player,
+          displayName,
           executor: clampText(message.executor, 40) || 'Unknown',
           loader: Number(message.loader) || 1,
           connectedAt: session.connectedAt,
@@ -406,8 +534,21 @@ class BridgeServer extends EventEmitter {
 
         this.emit('clients', this.listClients());
 
-        // Ask for an immediate text pong. The loader answers from its message
-        // handler, so this proves the execute channel is wired, not just the socket.
+        // Resolve the canonical experience title in the background. The first
+        // update uses a factual Place ID; this replaces it only with Roblox's
+        // confirmed experience name. A failed lookup leaves the Place ID intact.
+        this.#resolveExperienceName(placeId, universeId).then((experienceName) => {
+          if (!experienceName || !session.alive || session.client !== meta) return;
+          if (meta.game !== experienceName) {
+            meta.game = experienceName;
+            this.emit('clients', this.listClients());
+          }
+        });
+
+        // Ask for an immediate application-level pong. The loader answers from
+        // its message handler, proving that the bridge is still responsive.
+        session.lastPingAt = logTime();
+        session.pingSentAt = session.lastPingAt;
         this.#sendText(session, JSON.stringify({ type: 'ping' }));
 
         if (!session.verified) {
@@ -427,6 +568,22 @@ class BridgeServer extends EventEmitter {
             });
           }, 10000);
           session.verifyTimer.unref?.();
+        }
+        break;
+      }
+
+      case 'metadata': {
+        if (!session.client) return;
+        const rawTitle = typeof message.experienceName === 'string'
+          ? message.experienceName
+          : (typeof message.game === 'string' ? message.game : '');
+        const title = clampText(rawTitle, 80).trim();
+        if (!title || /^(game|unknown game|place)$/i.test(title) || /^place\s+\d+$/i.test(title)) {
+          return;
+        }
+        if (session.client.game !== title) {
+          session.client.game = title;
+          this.emit('clients', this.listClients());
         }
         break;
       }
@@ -458,7 +615,10 @@ class BridgeServer extends EventEmitter {
       }
 
       case 'pong': {
-        session.lastSeen = logTime();
+        const now = logTime();
+        session.lastSeen = now;
+        session.lastPingAt = now;
+        session.pingSentAt = null;
         const wasVerified = session.verified;
         session.verified = true;
         if (session.client) {
@@ -528,18 +688,35 @@ class BridgeServer extends EventEmitter {
     this.#stopHeartbeat();
     this.heartbeat = setInterval(() => {
       const now = Date.now();
+
       for (const session of [...this.sessions]) {
         if (!session.alive) continue;
-        if (now - session.lastSeen > STALE_AFTER) {
-          this.#destroy(session, 1000);
+
+        // A socket that never completed the loader handshake should not linger.
+        if (!session.client) {
+          if (now - session.connectedAt >= HANDSHAKE_TIMEOUT) {
+            this.#destroy(session, 1001);
+          }
           continue;
         }
-        this.#sendFrame(session, OP.PING, Buffer.alloc(0));
-        if (session.client) {
+
+        // Do not send overlapping pings. If the outstanding ping is not
+        // answered before the deadline, remove the client and publish the
+        // updated client list through #teardown().
+        if (session.pingSentAt !== null) {
+          if (now - session.pingSentAt >= HEARTBEAT_TIMEOUT) {
+            this.#destroy(session, 1001);
+          }
+          continue;
+        }
+
+        if (now - session.lastPingAt >= HEARTBEAT_INTERVAL) {
+          session.lastPingAt = now;
+          session.pingSentAt = now;
           this.#sendText(session, JSON.stringify({ type: 'ping' }));
         }
       }
-    }, 25000);
+    }, HEARTBEAT_TICK);
     this.heartbeat.unref?.();
   }
 

@@ -80,7 +80,8 @@
 
   const FALLBACK_CONFIG = {
     theme: 'graphite',
-    accent: '#7c9cff',
+    displayName: '',
+    accent: '#ffffff',
     glow: true,
     motion: true,
     compact: false,
@@ -98,7 +99,7 @@
   };
 
   const THEMES = [
-    { id: 'graphite', name: 'Graphite', accent: '#7c9cff', bg: '#0a0b0d', panel: '#121417', elev: '#1a1d21' },
+    { id: 'graphite', name: 'Graphite', accent: '#ffffff', bg: '#0a0b0d', panel: '#121417', elev: '#1a1d21' },
     { id: 'midnight', name: 'Midnight', accent: '#6ea8ff', bg: '#080d1a', panel: '#0e1524', elev: '#172133' },
     { id: 'forest', name: 'Forest', accent: '#57cf9a', bg: '#090f0c', panel: '#101813', elev: '#18231b' },
     { id: 'ember', name: 'Ember', accent: '#f0a061', bg: '#100c09', panel: '#1a1410', elev: '#241c16' },
@@ -107,7 +108,7 @@
   ];
 
   const ACCENTS = [
-    '#7c9cff', '#6ea8ff', '#57cf9a', '#67d4d4', '#f0a061',
+    '#ffffff', '#6ea8ff', '#57cf9a', '#67d4d4', '#f0a061',
     '#e07ba8', '#b18cff', '#f2c94c', '#e06c6c', '#a8b0bd',
   ];
 
@@ -253,6 +254,8 @@
     profileAvatar: $('#profileAvatar'),
     profileName: $('#profileName'),
     profileMeta: $('#profileMeta'),
+    profileNameInput: $('#profileNameInput'),
+    saveProfileName: $('#saveProfileName'),
     themeGrid: $('#themeGrid'),
     accentRow: $('#accentRow'),
     fontSize: $('#fontSize'),
@@ -786,6 +789,29 @@
       });
     });
 
+    el.saveProfileName?.addEventListener('click', async () => {
+      const displayName = el.profileNameInput.value.trim().slice(0, 40);
+      state.config.displayName = displayName;
+      const saved = await api.setConfig(state.config).catch(() => null);
+      if (!saved) {
+        toast('Could not save your username', 'error');
+        return;
+      }
+      state.config = saved;
+      const freshUser = await api.getUser().catch(() => state.user);
+      state.user = freshUser;
+      renderIdentity();
+      fillSettings();
+      toast(displayName ? 'Username updated' : 'Using Windows username', 'success');
+    });
+
+    el.profileNameInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        el.saveProfileName.click();
+      }
+    });
+
     el.fontSize.addEventListener('input', () => {
       const size = clamp(Number(el.fontSize.value) || 13, 11, 20);
       state.config.editor.fontSize = size;
@@ -924,6 +950,7 @@
       state.config = result.config;
       state.clients = result.bridge?.clients || [];
       state.bridge = { ...state.bridge, ...result.bridge, clients: state.clients };
+      state.user = await api.getUser().catch(() => state.user);
       applyConfig();
       fillSettings();
       if (result.bridge?.loader) el.loaderPreview.textContent = result.bridge.loader;
@@ -1551,39 +1578,217 @@
     scheduleSessionSave();
   }
 
-  function renderTabs() {
-    el.docTabs.innerHTML = '';
+  /* ------------------------------------------------------------------ *
+   * Tabs
+   *
+   * Tabs are keyed by document id and reused between renders, so only the
+   * tab that actually changed animates:
+   *   - a new tab fades and scales in,
+   *   - a closed tab fades out while the others slide into the gap (FLIP),
+   *   - one shared "pill" glides to whichever tab is active.
+   * ------------------------------------------------------------------ */
 
-    state.docs.forEach((doc, index) => {
-      const tab = document.createElement('div');
-      tab.className = `doc-tab ${index === state.active ? 'active' : ''}`;
-      tab.dataset.docIndex = String(index);
+  const TAB_MS = 260;
+  const TAB_EASE = 'cubic-bezier(0.22, 0.82, 0.2, 1)';
+  const TAB_ADD_KEY = '__add__';
 
-      const dot = document.createElement('span');
-      dot.className = `tab-dot ${doc.dirty ? 'on' : ''}`;
+  const tabView = {
+    nodes: new Map(), // doc.id -> tab element
+    indicator: null, // the sliding active pill
+    add: null, // the "+" button
+    ready: false, // false until the first render, which must not animate
+  };
 
-      const name = document.createElement('button');
-      name.className = 'tab-name';
+  const motionOn = () =>
+    el.root.dataset.motion !== 'off' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function createTabNode() {
+    const tab = document.createElement('div');
+    tab.className = 'doc-tab';
+
+    const dot = document.createElement('span');
+    dot.className = 'tab-dot';
+
+    const name = document.createElement('button');
+    name.className = 'tab-name';
+
+    const close = document.createElement('button');
+    close.className = 'tab-close';
+    close.title = 'Close tab';
+    close.innerHTML = icon('x');
+
+    tab.append(dot, name, close);
+    return tab;
+  }
+
+  function updateTabNode(tab, doc, index) {
+    const [dot, name, close] = tab.children;
+    tab.classList.toggle('active', index === state.active);
+    tab.dataset.docIndex = String(index);
+    dot.classList.toggle('on', Boolean(doc.dirty));
+    if (name.textContent !== doc.name) {
       name.textContent = doc.name;
       name.title = doc.name;
+    }
+    close.dataset.closeDoc = String(index);
+    close.setAttribute('aria-label', `Close ${doc.name}`);
+  }
 
-      const close = document.createElement('button');
-      close.className = 'tab-close';
-      close.dataset.closeDoc = String(index);
-      close.title = 'Close tab';
-      close.innerHTML = icon('x');
-      close.setAttribute('aria-label', `Close ${doc.name}`);
+  // Moves the pill under the active tab. It uses layout positions (offsetLeft), which
+  // ignore transforms, so it always aims at where the tab is going to rest.
+  function placeTabIndicator(animated) {
+    const { indicator, nodes } = tabView;
+    if (!indicator) return;
 
-      tab.append(dot, name, close);
-      el.docTabs.appendChild(tab);
+    const node = nodes.get(currentDoc()?.id);
+    if (!node) {
+      indicator.style.opacity = '0';
+      return;
+    }
+
+    if (!animated) indicator.classList.add('instant');
+    indicator.style.width = `${node.offsetWidth}px`;
+    indicator.style.transform = `translateX(${node.offsetLeft}px)`;
+    indicator.style.opacity = '1';
+    if (!animated) {
+      void indicator.offsetWidth; // flush styles so the jump happens without a transition
+      indicator.classList.remove('instant');
+    }
+  }
+
+  // Takes a closed tab out of the flow so its neighbours can slide over it while it fades.
+  function retireTab(node) {
+    node.classList.add('leaving');
+    node.removeAttribute('data-doc-index');
+    node.querySelector('[data-close-doc]')?.removeAttribute('data-close-doc');
+    node.style.position = 'absolute';
+    node.style.left = `${node.offsetLeft}px`;
+    node.style.top = `${node.offsetTop}px`;
+    node.style.width = `${node.offsetWidth}px`;
+    node.style.margin = '0';
+    node.style.pointerEvents = 'none';
+
+    node
+      .animate(
+        [
+          { opacity: 1, transform: 'none' },
+          { opacity: 0, transform: 'translateY(4px) scale(0.92)' },
+        ],
+        { duration: 170, easing: 'ease-out', fill: 'forwards' },
+      )
+      .addEventListener('finish', () => node.remove());
+  }
+
+  function renderTabs() {
+    const container = el.docTabs;
+
+    if (!tabView.indicator) {
+      tabView.indicator = document.createElement('span');
+      tabView.indicator.className = 'tab-indicator';
+      tabView.indicator.setAttribute('aria-hidden', 'true');
+
+      tabView.add = document.createElement('button');
+      tabView.add.className = 'tab-add';
+      tabView.add.dataset.newDoc = '1';
+      tabView.add.title = 'New file';
+      tabView.add.innerHTML = icon('plus');
+
+      container.append(tabView.indicator, tabView.add);
+
+      // Tabs have no size while the editor page is hidden, and flex-shrink resizes them
+      // with the window, so the pill is re-placed (without animating) whenever that changes.
+      new ResizeObserver(() => placeTabIndicator(false)).observe(container);
+    }
+
+    const animate = tabView.ready && motionOn();
+
+    // FIRST: where every tab is on screen right now, including any animation in flight.
+    const first = new Map();
+    const scrollBefore = container.scrollLeft;
+    if (animate) {
+      tabView.nodes.forEach((node, key) => first.set(key, node.getBoundingClientRect().left));
+      first.set(TAB_ADD_KEY, tabView.add.getBoundingClientRect().left);
+    }
+
+    // Retire tabs whose document is gone.
+    const alive = new Set(state.docs.map((doc) => doc.id));
+    [...tabView.nodes].forEach(([key, node]) => {
+      if (alive.has(key)) return;
+      tabView.nodes.delete(key);
+      if (animate) retireTab(node);
+      else node.remove();
     });
 
-    const add = document.createElement('button');
-    add.className = 'tab-add';
-    add.dataset.newDoc = '1';
-    add.title = 'New file';
-    add.innerHTML = icon('plus');
-    el.docTabs.appendChild(add);
+    // Create or update one tab per document, in document order.
+    const ordered = [];
+    const created = [];
+    state.docs.forEach((doc, index) => {
+      let node = tabView.nodes.get(doc.id);
+      if (!node) {
+        node = createTabNode();
+        tabView.nodes.set(doc.id, node);
+        created.push(node);
+      }
+      updateTabNode(node, doc, index);
+      ordered.push(node);
+    });
+
+    // Only touch the DOM when needed: moving a node cancels its animations.
+    const present = [...container.children].filter(
+      (node) => node.classList.contains('doc-tab') && !node.classList.contains('leaving'),
+    );
+    const inOrder = present.every((node, index) => node === ordered[index]);
+    (inOrder ? ordered.slice(present.length) : ordered).forEach((node) =>
+      container.insertBefore(node, tabView.add),
+    );
+
+    // Keep the active tab visible when there are more tabs than fit.
+    const active = tabView.nodes.get(currentDoc()?.id);
+    if (active) {
+      const left = active.offsetLeft;
+      const right = left + active.offsetWidth;
+      if (left < container.scrollLeft) container.scrollLeft = Math.max(0, left - 8);
+      else if (right > container.scrollLeft + container.clientWidth) {
+        container.scrollLeft = right - container.clientWidth + 8;
+      }
+    }
+
+    placeTabIndicator(animate);
+
+    // LAST + PLAY: slide each surviving tab from where it was to where it is now.
+    if (animate && container.scrollLeft === scrollBefore) {
+      tabView.nodes.forEach((node, key) => {
+        if (!first.has(key)) return;
+        const shift = first.get(key) - node.getBoundingClientRect().left;
+        if (Math.abs(shift) < 0.5) return;
+        node.animate([{ transform: `translateX(${shift}px)` }, { transform: 'none' }], {
+          duration: TAB_MS,
+          easing: TAB_EASE,
+        });
+      });
+
+      const addShift = first.get(TAB_ADD_KEY) - tabView.add.getBoundingClientRect().left;
+      if (Math.abs(addShift) >= 0.5) {
+        tabView.add.animate([{ transform: `translateX(${addShift}px)` }, { transform: 'none' }], {
+          duration: TAB_MS,
+          easing: TAB_EASE,
+        });
+      }
+    }
+
+    if (animate) {
+      created.forEach((node) =>
+        node.animate(
+          [
+            { opacity: 0, transform: 'translateY(6px) scale(0.9)' },
+            { opacity: 1, transform: 'none' },
+          ],
+          { duration: TAB_MS, easing: TAB_EASE },
+        ),
+      );
+    }
+
+    tabView.ready = true;
   }
 
   function renderExplorer() {
@@ -2461,6 +2666,10 @@
       PLATFORM_LABELS[state.user.platform] || 'Local'
     } account`;
     el.settingsUserFoot.textContent = `${state.user.username} · local account`;
+    if (el.profileNameInput) {
+      el.profileNameInput.value = state.config.displayName || '';
+      el.profileNameInput.placeholder = state.user.windowsUsername || 'Windows username';
+    }
 
     setSwitch($('#toggleRestore'), state.config.restoreTabs);
     setSwitch($('#toggleConfirm'), state.config.confirmDelete);
