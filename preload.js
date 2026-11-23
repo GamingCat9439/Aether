@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('api', {
   getUser: () => ipcRenderer.invoke('user:get'),
   getAppInfo: () => ipcRenderer.invoke('app:info'),
   openDataFolder: () => ipcRenderer.invoke('app:open-data'),
+  checkForUpdates: (manual) => ipcRenderer.invoke('app:check-updates', Boolean(manual)),
 
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
 
@@ -48,4 +49,5 @@ contextBridge.exposeInMainWorld('api', {
   onLog: subscribe('bridge:log'),
   onBridgeState: subscribe('bridge:state'),
   onWindowState: subscribe('win:state'),
+  onUpdateAvailable: subscribe('app:update-available'),
 });

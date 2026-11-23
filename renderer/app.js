@@ -280,6 +280,8 @@
     aboutPlatform: $('#aboutPlatform'),
     openData: $('#openData'),
     resetSettings: $('#resetSettings'),
+    checkUpdates: $('#checkUpdates'),
+    updateStatus: $('#updateStatus'),
 
     clientsPopover: $('#clientsPopover'),
     popoverSub: $('#popoverSub'),
@@ -467,6 +469,9 @@
       state.lastBridgeError = state.bridge.error;
       toast(state.bridge.error, 'error');
     }
+
+    checkForUpdates(false);
+
 
     subscribeToBridge();
     const freshBridge = await api.getBridge().catch(() => null);
@@ -935,6 +940,13 @@
     el.openData.addEventListener('click', async () => {
       const result = await api.openDataFolder();
       if (!result.ok) toast(result.message || 'Could not open the folder', 'error');
+    });
+
+    el.checkUpdates.addEventListener('click', () => checkForUpdates(true));
+
+    api.onUpdateAvailable?.((result) => {
+      handleUpdateResult(result);
+      showUpdateModal(result);
     });
 
     el.resetSettings.addEventListener('click', async () => {
@@ -2882,6 +2894,61 @@
   /* ------------------------------------------------------------------ *
    * Loader + modals
    * ------------------------------------------------------------------ */
+
+  function handleUpdateResult(result) {
+    if (!el.updateStatus) return;
+    if (!result?.ok) {
+      el.updateStatus.textContent = 'Could not check';
+      return;
+    }
+    el.updateStatus.textContent = result.available
+      ? `Update available: ${result.latestVersion}`
+      : `Up to date (${result.currentVersion})`;
+  }
+
+  function showUpdateModal(result) {
+    openModal({
+      title: 'Aether update available',
+      subtitle: `${result.currentVersion} → ${result.latestVersion}`,
+      content: `<p class="modal-text">${esc(result.releaseName || 'A new Aether release is ready to download.')}</p>`,
+      actions: [
+        {
+          label: 'Open releases',
+          kind: 'primary',
+          onClick: async () => {
+            const opened = await api.openExternal(result.releaseUrl);
+            if (!opened.ok) toast(opened.message || 'Could not open GitHub', 'error');
+          },
+        },
+        { label: 'Later', kind: 'ghost' },
+      ],
+    });
+  }
+
+  async function checkForUpdates(manual = false) {
+    if (!el.checkUpdates) return;
+    el.checkUpdates.disabled = true;
+    el.checkUpdates.textContent = 'Checking…';
+    if (el.updateStatus) el.updateStatus.textContent = 'Checking…';
+
+    const result = await api.checkForUpdates(manual).catch(() => ({
+      ok: false,
+      available: false,
+      error: 'Could not check for updates',
+    }));
+
+    el.checkUpdates.disabled = false;
+    el.checkUpdates.innerHTML =
+      '<svg class="icon" viewBox="0 0 24 24"><use href="#i-refresh"/></svg> Check now';
+    handleUpdateResult(result);
+
+    if (!result.ok) {
+      if (manual) toast(result.error || 'Could not check for updates', 'error');
+      return;
+    }
+    if (result.available) showUpdateModal(result);
+    else if (manual) toast(`Aether ${result.currentVersion} is up to date`, 'success');
+  }
 
   async function copyLoader(usePreview = false) {
     let loader = usePreview ? el.loaderPreview.textContent : state.bridge.loader;

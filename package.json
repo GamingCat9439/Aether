@@ -12,6 +12,11 @@
   "build": {
     "appId": "com.aether.desktop",
     "productName": "Aether",
+    "publish": {
+      "provider": "github",
+      "owner": "GamingCat9439",
+      "repo": "Aether"
+    },
     "directories": {
       "output": "dist"
     },
