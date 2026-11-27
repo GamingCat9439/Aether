@@ -12,6 +12,8 @@ function subscribe(channel) {
 }
 
 contextBridge.exposeInMainWorld('api', {
+  askAssistant: request => ipcRenderer.invoke('assistant:ask', request),
+  cancelAssistant: () => ipcRenderer.invoke('assistant:cancel'),
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (config) => ipcRenderer.invoke('config:set', config),
   resetConfig: () => ipcRenderer.invoke('config:reset'),

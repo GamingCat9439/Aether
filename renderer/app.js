@@ -220,7 +220,6 @@
     currentLine: $('#currentLine'),
     highlight: $('#highlight'),
     code: $('#code'),
-    caret: $('#editorCaret'),
     cursorInfo: $('#cursorInfo'),
     dirtyState: $('#dirtyState'),
     sbBridge: $('#sbBridge'),
@@ -297,7 +296,7 @@
 
   const state = {
     user: { username: 'user', hostname: '', platform: 'win32' },
-    app: { version: '1.0.0' },
+    app: {},
     config: { ...FALLBACK_CONFIG },
     scripts: [],
     docs: [],
@@ -316,6 +315,8 @@
     hubSource: 'all',
     hubCategory: 'all',
     hubQuery: '',
+    homePicks: [],
+    homePicksLoading: false,
     hubProviders: createHubProviderState(),
     hubLoading: false,
     hubNotice: '',
@@ -385,7 +386,7 @@
         hostname: '',
         platform: 'win32',
       })),
-      api.getAppInfo().catch(() => ({ version: '1.0.0' })),
+      api.getAppInfo().catch(() => ({})),
       api.getSession().catch(() => null),
       api.getBridge().catch(() => ({
         running: false,
@@ -432,7 +433,6 @@
         gutter: el.gutter,
         currentLine: el.currentLine,
         stage: el.editorStage,
-        caret: el.caret,
         cursorInfo: el.cursorInfo,
         dirtyState: el.dirtyState,
       },
@@ -448,10 +448,11 @@
     applyConfig();
     renderIdentity();
     renderAll();
+    loadHomePicks();
     setSettingsSection(state.settingsSection);
 
-    el.brandVersion.textContent = state.app.version || '1.0.0';
-    el.aboutVersion.textContent = state.app.version || '1.0.0';
+    el.brandVersion.textContent = state.app.version || '—';
+    el.aboutVersion.textContent = state.app.version || '—';
     el.aboutElectron.textContent = state.app.electron || '—';
     el.aboutChrome.textContent = state.app.chrome || '—';
     el.aboutPlatform.textContent = `${PLATFORM_LABELS[state.app.platform] || state.app.platform || 'Unknown'} · ${
@@ -505,6 +506,27 @@
     el.settingsUserFoot.textContent = `${username} · local account`;
   }
 
+  const navUnderline = document.createElement('span');
+  navUnderline.className = 'nav-underline';
+  navUnderline.setAttribute('aria-hidden', 'true');
+  el.nav.append(navUnderline);
+
+  function positionNavUnderline(animate) {
+    const tab = el.nav.querySelector('button.active');
+    if (!tab) return;
+    // Match the original 27% inset on either side of each tab.
+    const width = tab.offsetWidth;
+    navUnderline.classList.toggle('moving', animate);
+    navUnderline.style.top = (tab.offsetTop + tab.offsetHeight - 4) + 'px';
+    navUnderline.style.width = (width * 0.46) + 'px';
+    navUnderline.style.transform = `translateX(${tab.offsetLeft + width * 0.27}px)`;
+  }
+
+  const navResize = new ResizeObserver(() => positionNavUnderline(false));
+  navResize.observe(el.nav);
+  for (const tab of el.nav.querySelectorAll('button')) navResize.observe(tab);
+  positionNavUnderline(false);
+
   function go(page) {
     if (!['home', 'editor', 'scripts', 'settings'].includes(page)) return;
 
@@ -512,6 +534,7 @@
     $$('#nav button').forEach((button) => {
       button.classList.toggle('active', button.dataset.page === page);
     });
+    positionNavUnderline(true);
     el.pages.forEach((section) => {
       section.classList.toggle('active', section.dataset.page === page);
     });
@@ -530,7 +553,28 @@
     }
   }
 
+  async function jumpToLine() {
+    const editor = state.editor;
+    const input = await promptDialog({
+      title: 'Go to line', label: 'Line or line:column',
+      placeholder: '2941:42', confirmText: 'Go',
+    });
+    if (!input) return;
+    const match = /^(\d+)(?:\s*:\s*(\d+))?$/.exec(input);
+    if (!match || Number(match[1]) < 1 || Number(match[1]) > editor.model.count || Number(match[2]) === 0) {
+      toast(`Enter a line from 1 to ${editor.model.count} and an optional column.`, 'warn');
+      return;
+    }
+    editor.goTo(Number(match[1]) - 1, Number(match[2] || 1) - 1);
+  }
+
   function bindUI() {
+    el.code.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'g') {
+        event.preventDefault();
+        jumpToLine();
+      }
+    });
     el.nav.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-page]');
       if (button) go(button.dataset.page);
@@ -712,9 +756,21 @@
       if (button) openSavedScript(button.dataset.openScript);
     });
 
-    el.homePicks.addEventListener('click', handleHubAction);
+    el.homePicks.addEventListener('click', event => {
+      if (event.target.closest('[data-retry-picks]')) loadHomePicks();
+      else handleHubAction(event);
+    });
     el.hubGrid.addEventListener('click', handleHubAction);
+    const detail = $('#hubDetail');
+    $('#hubBack').addEventListener('click', () => detail.close());
+    detail.addEventListener('keydown', event => event.stopPropagation());
+    detail.addEventListener('click', event => {
+      const box = detail.getBoundingClientRect();
+      if (event.target === detail && (event.clientX < box.left || event.clientX > box.right ||
+          event.clientY < box.top || event.clientY > box.bottom)) detail.close();
+    });
     el.libraryGrid.addEventListener('click', handleLibraryAction);
+    el.explorerTree.addEventListener('click', handleLibraryAction);
 
     document.addEventListener('click', (event) => {
       const link = event.target.closest('[data-hub-link]');
@@ -1068,7 +1124,7 @@
     el.homeConnect.textContent = connected ? 'Manage clients' : 'Connect a client';
 
     renderHomeRecent();
-    renderHomePicks();
+
     renderHomeClients();
     renderHomeActivity();
   }
@@ -1109,24 +1165,57 @@
       .join('');
   }
 
-  function renderHomePicks() {
-    const wanted = ['anti-afk', 'server-hop', 'fps-cap'];
-    const picks = wanted
-      .map((id) => window.HUB_SCRIPTS.find((script) => script.id === id))
-      .filter(Boolean)
-      .slice(0, 3);
+  function choosePopularPicks(items) {
+    const eligible = items.filter(item => item.id && item.title && !item.patched && (item.views > 0 || item.likes > 0));
+    eligible.sort((a, b) => b.views - a.views || b.likes - a.likes);
+    // Providers can list the same script. Keep the higher-ranked copy.
+    const seen = new Set();
+    const ranked = eligible.filter(item => {
+      const key = item.title.trim().toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const pool = ranked.slice(0, Math.max(3, Math.ceil(ranked.length / 2)));
+    const picks = [];
+    while (pool.length && picks.length < 3) {
+      const index = Math.floor(Math.random() * pool.length);
+      picks.push(pool.splice(index, 1)[0]);
+    }
+    return picks;
+  }
 
+  async function loadHomePicks() {
+    if (state.homePicksLoading) return;
+    state.homePicksLoading = true;
+    el.homePicks.textContent = 'Loading community picks…';
+    el.homePicks.setAttribute('aria-busy', 'true');
+    const feeds = await Promise.allSettled(Object.keys(HUB_PROVIDERS).map(provider =>
+      api.fetchHub({ provider, page: 1, query: '' })
+    ));
+    const items = feeds.flatMap(feed =>
+      feed.status === 'fulfilled' && feed.value?.ok ? feed.value.items || [] : []
+    );
+    const picks = choosePopularPicks(items);
+    state.homePicks = picks;
+    state.homePicksLoading = false;
+    el.homePicks.removeAttribute('aria-busy');
+    if (!picks.length) {
+      const message = items.length ? 'No ranked community picks available.' : 'No community picks available right now.';
+      el.homePicks.innerHTML = `<p class="hub-feed">${message} <button class="link tiny" data-retry-picks>Retry</button></p>`;
+      return;
+    }
     el.homePicks.innerHTML = picks
       .map((script) => {
-        const meta = CATEGORY_META[script.category] || CATEGORY_META.utility;
+        const stat = script.views ? formatCount(script.views) + ' views' : formatCount(script.likes) + ' likes';
         return `
-          <button class="pick" data-open-hub="${esc(script.id)}">
+          <button class="pick" aria-haspopup="dialog" data-detail-id="${esc(script.id)}">
             ${scriptCover(script, true)}
             <span class="pick-copy">
               <strong>${esc(script.title)}</strong>
               <span>${esc(script.blurb)}</span>
             </span>
-            <span class="pick-meta">${meta.label}</span>
+            <span class="pick-meta">${esc(stat)}</span>
             ${icon('arrow-right', 'icon pick-arrow')}
           </button>`;
       })
@@ -1471,8 +1560,10 @@
     if (!doc) return;
 
     doc.code = value;
-    if (!doc.dirty) doc.dirty = true;
-    updateDirtyUI();
+    if (!doc.dirty) {
+      doc.dirty = true;
+      updateDirtyUI();
+    }
     scheduleSessionSave();
   }
 
@@ -1828,18 +1919,18 @@
         const active = activeDoc?.originId === script.id;
         const dirty = state.docs.some((doc) => doc.originId === script.id && doc.dirty);
         return `
-          <button class="tree-row ${active ? 'active' : ''} ${dirty ? 'has-dirty' : ''}"
-            data-open-script="${esc(script.id)}">
-            ${icon('file')}
-            <span class="tree-name">${esc(script.name)}</span>
-            <span class="tree-dot"></span>
-          </button>`;
+          <div class="explorer-file">
+            <button class="tree-row ${active ? 'active' : ''} ${dirty ? 'has-dirty' : ''}"
+              data-open-script="${esc(script.id)}">
+              ${icon('file')}
+              <span class="tree-name">${esc(script.name)}</span>
+              <span class="tree-dot"></span>
+            </button>
+            ${savedScriptButtons(script)}
+          </div>`;
       })
       .join('');
 
-    $$('[data-open-script]', el.explorerTree).forEach((row) => {
-      row.addEventListener('click', () => openSavedScript(row.dataset.openScript));
-    });
   }
 
   function openSavedScript(id) {
@@ -1893,9 +1984,10 @@
       ? state.scripts.find((item) => item.id === doc.originId)
       : null;
 
+    let name = script?.name;
     if (!script) {
       const suggested = /^Untitled/.test(doc.name) ? '' : doc.name.replace(/\.(lua|txt)$/i, '');
-      const name = await promptDialog({
+      name = await promptDialog({
         title: 'Save to library',
         subtitle: 'Give this script a name you will recognise later.',
         label: 'Script name',
@@ -1904,24 +1996,24 @@
         confirmText: 'Save',
       });
       if (!name) return;
-
-      script = {
-        id: uid(),
-        name: uniqueScriptName(name),
-        code: doc.code,
-        category: '',
-        updatedAt: Date.now(),
-      };
-      state.scripts.push(script);
-      doc.originId = script.id;
-    } else {
-      script.code = doc.code;
-      script.updatedAt = Date.now();
     }
 
+    const code = doc.code;
+    const id = script?.id || uid();
+    const saved = await persistScripts(scripts => {
+      const existing = scripts.find(item => item.id === id);
+      script = {
+        ...existing, id, code,
+        name: existing?.name || uniqueScriptName(name),
+        category: existing?.category || '',
+        updatedAt: Date.now(),
+      };
+      return existing ? scripts.map(item => item.id === id ? script : item) : [...scripts, script];
+    });
+    if (!saved) return;
+    doc.originId = id;
     doc.name = script.name;
-    doc.dirty = false;
-    await persistScripts();
+    doc.dirty = doc.code !== code;
     renderTabs();
     renderExplorer();
     updateDirtyUI();
@@ -1944,11 +2036,24 @@
     return `${base} ${index}`;
   }
 
-  async function persistScripts() {
-    await api.setScripts(state.scripts).catch(() => {});
-    renderLibrary();
-    renderHome();
-    el.libraryBadge.textContent = String(state.scripts.length);
+  // Serialize library edits. Publish each new list only after the disk write
+  // succeeds, so simultaneous saves and deletes cannot drop another edit.
+  let libraryWrite = Promise.resolve();
+  function persistScripts(update) {
+    const work = libraryWrite.then(async () => {
+      const next = update(state.scripts);
+      if (await api.setScripts(next) === false) throw new Error('Write failed');
+      state.scripts = next;
+      renderLibrary();
+      renderExplorer();
+      renderHome();
+      return true;
+    });
+    libraryWrite = work.catch(() => {
+      toast('Could not update saved scripts. Check the data folder and try again.', 'error');
+      return false;
+    });
+    return libraryWrite;
   }
 
   async function runCurrent() {
@@ -2141,6 +2246,7 @@
     return (
       window.HUB_SCRIPTS.find((script) => script.id === id) ||
       hubExternalItems().find((script) => script.id === id) ||
+      state.homePicks.find(script => script.id === id) ||
       null
     );
   }
@@ -2423,12 +2529,7 @@
     const heading = external
       ? `${script.game || 'Unknown game'}${views ? ` · ${formatCount(views)} views` : ''}`
       : `${meta.label} · ${lineCount(script.code)} lines`;
-    const badge =
-      external && script.url
-        ? `<button class="tag source-tag" data-source="${esc(source)}" data-hub-link="${esc(
-            script.url,
-          )}" title="Open on ${esc(providerLabel)}">${esc(providerLabel)}</button>`
-        : `<span class="tag source-tag" data-source="${esc(source)}">${esc(providerLabel)}</span>`;
+    const badge = `<span class="tag source-tag" data-source="${esc(source)}">${esc(providerLabel)}</span>`;
     const flags = external
       ? [
           script.verified ? { tone: 'verified', label: 'Verified' } : null,
@@ -2445,10 +2546,10 @@
       : '';
 
     return `
-      <article class="hub-card" data-category="${esc(script.category || 'utility')}" data-source="${esc(
+      <article class="hub-card" data-detail-id="${esc(script.id)}" data-category="${esc(script.category || 'utility')}" data-source="${esc(
         source,
       )}">
-        <button class="cover-button" data-open-hub="${esc(script.id)}" aria-label="Open ${esc(
+        <button class="cover-button" aria-haspopup="dialog" aria-label="View details for ${esc(
           script.title,
         )}">${scriptCover(script)}</button>
         <div class="hub-card-body">
@@ -2465,7 +2566,7 @@
           <div class="hub-foot">
             ${badge}
             <div class="hub-actions">
-              <button class="btn small ghost" data-open-hub="${esc(script.id)}">Open</button>
+              <button class="btn small ghost" data-open-hub="${esc(script.id)}">Open in editor</button>
               <button class="btn small accent" data-run-hub="${esc(script.id)}">${icon('play')} Run</button>
             </div>
           </div>
@@ -2522,7 +2623,45 @@
 
     if (event.target.closest('[data-hub-more]')) {
       loadHubExternal({ append: true });
+      return;
     }
+    const card = event.target.closest('[data-detail-id]');
+    if (card) showHubDetail(card);
+  }
+
+  function showHubDetail(card) {
+    const script = findHubScript(card.dataset.detailId);
+    if (!script) return;
+    const dialog = $('#hubDetail');
+    const fromHome = el.homePicks.contains(card);
+    $('#hubBack').lastChild.textContent = fromHome ? ' Back to home' : ' Back to hub';
+    const provider = HUB_PROVIDERS[hubItemSource(script)]?.label || 'Built-in';
+    const meta = CATEGORY_META[script.category] || CATEGORY_META.utility;
+    const date = new Date(script.updatedAt);
+    const facts = [
+      ['Category', meta.label], ['Game', script.game], ['Author', script.author],
+      ['Views', script.views ? formatCount(script.views) : ''],
+      ['Updated', script.updatedAt && Number.isFinite(date.getTime()) ? date.toLocaleDateString() : ''],
+    ].filter(([, value]) => value);
+    $('#hubDetailProvider').textContent = provider;
+    $('#hubDetailBody').innerHTML = `
+      ${scriptCover(script)}
+      <div class="detail-copy">
+        <h1 id="hubDetailTitle">${esc(script.title)}</h1>
+        <p>${esc(script.blurb || '')}</p>
+        <dl>${facts.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>
+        <div class="detail-tags">${(script.tags || []).map(tag => `<span class="tag">${esc(tag)}</span>`).join('')}</div>
+        <button class="btn primary" id="hubDetailEdit">Open in editor</button>
+      </div>`;
+    $('#hubDetailEdit').onclick = () => { dialog.close(); openHubScript(script.id); };
+    const id = script.id;
+    dialog.addEventListener('close', () => {
+      if (fromHome && state.page === 'home') card.focus({ preventScroll: true });
+      if (state.page !== 'scripts') return;
+      el.hubGrid.querySelector(`[data-detail-id="${CSS.escape(id)}"] .cover-button`)?.focus({ preventScroll: true });
+    }, { once: true });
+    dialog.showModal();
+    dialog.scrollTop = 0;
   }
 
   function openHubScript(id) {
@@ -2557,8 +2696,7 @@
       url: script.url || '',
     };
 
-    state.scripts.push(saved);
-    await persistScripts();
+    if (!await persistScripts(scripts => [...scripts, saved])) return;
     toast(`Saved ${saved.name}`, 'success');
     pushActivity('bookmark', `Saved ${saved.name}`);
   }
@@ -2609,8 +2747,7 @@
                   <h3>${esc(script.name)}</h3>
                   <span>${origin}${lineCount(script.code)} lines · ${timeAgo(script.updatedAt)}</span>
                 </div>
-                <button class="icon-btn tiny" data-delete-library="${esc(script.id)}" title="Delete script"
-                  aria-label="Delete ${esc(script.name)}">${icon('trash')}</button>
+                ${savedScriptButtons(script)}
               </div>
               <pre class="lib-preview">${esc(truncate(preview, 140))}</pre>
               <div class="lib-foot">
@@ -2623,25 +2760,54 @@
       .join('');
   }
 
+  function savedScriptButtons(script) {
+    const id = esc(script.id);
+    const name = esc(script.name);
+    return `
+      <button class="icon-btn tiny" data-rename-library="${id}" title="Rename saved script"
+        aria-label="Rename ${name}">${icon('pencil')}</button>
+      <button class="icon-btn tiny" data-delete-library="${id}" title="Delete saved script"
+        aria-label="Delete ${name}">${icon('trash')}</button>`;
+  }
+
   function handleLibraryAction(event) {
-    const open = event.target.closest('[data-open-library]');
-    if (open) {
-      openSavedScript(open.dataset.openLibrary);
-      return;
-    }
+    const button = event.target.closest('button');
+    if (!button) return;
+    const { openScript, openLibrary, renameLibrary, deleteLibrary, runLibrary } = button.dataset;
+    const id = openScript || openLibrary || renameLibrary || deleteLibrary || runLibrary;
+    const script = state.scripts.find(item => item.id === id);
+    if (!script) return;
 
-    const run = event.target.closest('[data-run-library]');
-    if (run) {
-      const script = state.scripts.find((item) => item.id === run.dataset.runLibrary);
-      if (script) executeScript(script.code, script.name);
-      return;
-    }
+    if (renameLibrary) renameSavedScript(script);
+    else if (deleteLibrary) deleteScript(script);
+    else if (runLibrary) executeScript(script.code, script.name);
+    else openSavedScript(script.id);
+  }
 
-    const remove = event.target.closest('[data-delete-library]');
-    if (remove) {
-      const script = state.scripts.find((item) => item.id === remove.dataset.deleteLibrary);
-      if (script) deleteScript(script);
+  async function renameSavedScript(script) {
+    const requested = await promptDialog({
+      title: 'Rename script',
+      label: 'Script name',
+      value: script.name,
+      confirmText: 'Rename',
+    });
+    if (!requested || requested === script.name) return;
+
+    let name;
+    const saved = await persistScripts(scripts => {
+      if (!scripts.some(item => item.id === script.id)) return scripts;
+      name = uniqueScriptName(requested, script.id);
+      return scripts.map(item => item.id === script.id ? { ...item, name } : item);
+    });
+    if (!saved || !name) return;
+
+    // An open tab may have unsaved edits. Only its label follows the rename.
+    for (const doc of state.docs) {
+      if (doc.originId === script.id) doc.name = name;
     }
+    renderTabs();
+    scheduleSessionSave();
+    toast(`Renamed to ${name}`, 'success');
   }
 
   async function deleteScript(script) {
@@ -2654,12 +2820,12 @@
       if (!confirmed) return;
     }
 
-    state.scripts = state.scripts.filter((item) => item.id !== script.id);
+    if (!await persistScripts(scripts => scripts.filter(item => item.id !== script.id))) return;
     state.docs.forEach((doc) => {
       if (doc.originId === script.id) doc.originId = null;
     });
 
-    await persistScripts();
+    scheduleSessionSave();
     renderTabs();
     renderExplorer();
     updateDirtyUI();
@@ -2704,7 +2870,7 @@
       el.loaderPreview.textContent = state.bridge.loader || 'Loading…';
     }
 
-    el.aboutVersion.textContent = state.app.version || '1.0.0';
+    el.aboutVersion.textContent = state.app.version || '—';
     el.aboutElectron.textContent = state.app.electron || '—';
     el.aboutChrome.textContent = state.app.chrome || '—';
     el.aboutPlatform.textContent = `${PLATFORM_LABELS[state.app.platform] || state.app.platform || 'Unknown'} · ${

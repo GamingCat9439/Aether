@@ -1,277 +1,91 @@
-/* Lua editor: transparent textarea over a highlighted <pre>, with a synced
-   gutter, current-line marker, smart indentation and bracket pairing. */
-
-(function () {
+/* Native textarea editing and scrolling with a viewport-sized syntax overlay. */
+(() => {
   'use strict';
-
-  const KEYWORDS = new Set([
-    'and', 'break', 'continue', 'do', 'else', 'elseif', 'end', 'export', 'for',
-    'function', 'goto', 'if', 'in', 'local', 'not', 'or', 'repeat', 'return',
-    'then', 'type', 'until', 'while',
-  ]);
-
-  const CONSTANTS = new Set(['true', 'false', 'nil']);
-
-  const BUILTINS = new Set([
-    'game', 'workspace', 'script', 'shared', 'self', '_G', 'print', 'warn', 'error',
-    'assert', 'pcall', 'xpcall', 'select', 'type', 'typeof', 'tostring',
-    'tonumber', 'pairs', 'ipairs', 'next', 'rawget', 'rawset', 'rawequal',
-    'rawlen', 'unpack', 'require', 'loadstring', 'load', 'dofile', 'collectgarbage',
-    'setmetatable', 'getmetatable', 'getgenv', 'getrenv', 'getreg', 'getgc',
-    'identifyexecutor', 'setclipboard', 'setfpscap', 'queue_on_teleport',
-    'task', 'wait', 'spawn', 'delay', 'tick', 'time', 'typeof', 'Instance',
-    'Vector3', 'Vector2', 'CFrame', 'Color3', 'UDim2', 'UDim', 'Enum', 'Ray',
-    'RaycastParams', 'TweenInfo', 'BrickColor', 'NumberRange', 'NumberSequence',
-    'ColorSequence', 'Rect', 'Region3', 'PhysicalProperties', 'Random',
-    'DateTime', 'Faces', 'Axes', 'font', 'table', 'string', 'math', 'os',
-    'coroutine', 'utf8', 'bit32', 'debug', 'buffer', 'vector',
-  ]);
-
-  const ESCAPE_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;' };
-  const escapeHtml = (value) => value.replace(/[&<>]/g, (char) => ESCAPE_MAP[char]);
-
-  function longBracket(code, start) {
-    if (code[start] !== '[') return null;
-    let level = 0;
-    let index = start + 1;
-    while (code[index] === '=') {
-      level += 1;
-      index += 1;
+  const escapes = { '&': '&amp;', '<': '&lt;', '>': '&gt;' };
+  const escape = text => text.replace(/[&<>]/g, ch => escapes[ch]);
+  function syntax(row) {
+    let html = '', i = 0;
+    for (const token of row.tokens) {
+      html += escape(row.text.slice(i, token.from));
+      html += '<span class="' + token.kind + '">' + escape(row.text.slice(token.from, token.to)) + '</span>';
+      i = token.to;
     }
-    if (code[index] !== '[') return null;
-
-    const close = `]${'='.repeat(level)}]`;
-    const end = code.indexOf(close, index + 1);
-    return { end: end === -1 ? code.length : end + close.length };
-  }
-
-  function previousWord(code, index) {
-    let cursor = index - 1;
-    while (cursor >= 0 && /\s/.test(code[cursor])) cursor -= 1;
-    const end = cursor;
-    while (cursor >= 0 && /[A-Za-z0-9_]/.test(code[cursor])) cursor -= 1;
-    return code.slice(cursor + 1, end + 1);
-  }
-
-  function highlightLua(code) {
-    let output = '';
-    let plainFrom = 0;
-    let index = 0;
-    const length = code.length;
-
-    const flush = (until) => {
-      if (until > plainFrom) output += escapeHtml(code.slice(plainFrom, until));
-    };
-
-    const token = (start, end, className) => {
-      flush(start);
-      output += `<span class="${className}">${escapeHtml(code.slice(start, end))}</span>`;
-      plainFrom = end;
-    };
-
-    while (index < length) {
-      const char = code[index];
-
-      if (char === '-' && code[index + 1] === '-') {
-        const long = longBracket(code, index + 2);
-        let end;
-        if (long) {
-          end = long.end;
-        } else {
-          const newline = code.indexOf('\n', index);
-          end = newline === -1 ? length : newline;
-        }
-        token(index, end, 't-com');
-        index = end;
-        continue;
-      }
-
-      if (char === '[') {
-        const long = longBracket(code, index);
-        if (long) {
-          token(index, long.end, 't-str');
-          index = long.end;
-          continue;
-        }
-      }
-
-      if (char === '"' || char === "'" || char === '`') {
-        let cursor = index + 1;
-        while (cursor < length) {
-          const current = code[cursor];
-          if (current === '\\') {
-            cursor += 2;
-            continue;
-          }
-          if (current === char || (current === '\n' && char !== '`')) {
-            cursor += 1;
-            break;
-          }
-          cursor += 1;
-        }
-        token(index, cursor, 't-str');
-        index = cursor;
-        continue;
-      }
-
-      if (/[0-9]/.test(char) || (char === '.' && /[0-9]/.test(code[index + 1] || ''))) {
-        const match = code
-          .slice(index)
-          .match(/^(?:0[xX][0-9a-fA-F]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/);
-        if (match) {
-          token(index, index + match[0].length, 't-num');
-          index += match[0].length;
-          continue;
-        }
-      }
-
-      if (/[A-Za-z_]/.test(char)) {
-        let end = index + 1;
-        while (end < length && /[A-Za-z0-9_]/.test(code[end])) end += 1;
-        const word = code.slice(index, end);
-        let lookahead = end;
-        while (lookahead < length && (code[lookahead] === ' ' || code[lookahead] === '\t')) {
-          lookahead += 1;
-        }
-        let lookbehind = index - 1;
-        while (lookbehind >= 0 && (code[lookbehind] === ' ' || code[lookbehind] === '\t')) {
-          lookbehind -= 1;
-        }
-
-        let className = 't-id';
-        if (KEYWORDS.has(word)) className = 't-kw';
-        else if (CONSTANTS.has(word)) className = 't-const';
-        else if (lookbehind >= 0 && (code[lookbehind] === '.' || code[lookbehind] === ':')) className = 't-prop';
-        else if (BUILTINS.has(word)) className = 't-builtin';
-        else if (code[lookahead] === '(' || previousWord(code, index) === 'function') className = 't-fn';
-
-        token(index, end, className);
-        index = end;
-        continue;
-      }
-
-      if ('+-*/%^#=<>~'.includes(char)) {
-        let end = index + 1;
-        const pair = code.slice(index, index + 2);
-        if (pair === '==' || pair === '~=' || pair === '<=' || pair === '>=' || pair === '..') {
-          end += 1;
-          if (pair === '..' && code[index + 2] === '.') end += 1;
-        }
-        token(index, end, 't-op');
-        index = end;
-        continue;
-      }
-
-      if ('{}()[],;:.'.includes(char)) {
-        token(index, index + 1, 't-punc');
-        index += 1;
-        continue;
-      }
-
-      index += 1;
-    }
-
-    flush(length);
-    if (code.endsWith('\n')) output += '\n';
-    return output;
+    return html + escape(row.text.slice(i));
   }
 
   class LuaEditor {
     constructor(elements, callbacks, options) {
-      this.textarea = elements.textarea;
-      this.highlight = elements.highlight;
-      this.gutter = elements.gutter;
-      this.currentLine = elements.currentLine;
-      this.stage = elements.stage;
-      this.caret = elements.caret || null;
-      this.scroller = this.stage.querySelector('.editor-scroller');
-      this.cursorInfo = elements.cursorInfo;
-      this.dirtyState = elements.dirtyState;
+      Object.assign(this, elements);
       this.callbacks = callbacks || {};
-      this.options = {
-        fontSize: 13,
-        tabSize: 2,
-        wrap: false,
-        lineNumbers: true,
-        highlightLine: true,
-        autoIndent: true,
-        ...options,
-      };
-
-      this.frame = null;
-      this.lineHeight = 21;
-      this.padTop = 16;
-      this.gutterLineEls = [];
-      this.gutterLineCount = 0;
-      this.activeLine = 0;
-
-      this.mirror = null;
-      this.mirrorCaret = null;
-      this.caretAnchor = null;
-      this.caretTimer = 0;
-      this.lineAnimation = null;
-      this.suppressLineMotion = false;
-      this.motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
-
+      this.scroller = this.stage.querySelector('.editor-scroller');
+      this.options = { fontSize: 13, tabSize: 2, wrap: false, lineNumbers: true, highlightLine: true, autoIndent: true, ...options };
+      this.nodes = new Map();
+      this.wrapNodes = [];
+      this.metricsDirty = true;
+      this.frame = 0;
       this.placeholder = document.createElement('div');
       this.placeholder.className = 'editor-placeholder';
-      this.placeholder.textContent = 'Start writing Lua, or open a file from the workspace.';
+      this.placeholder.innerHTML = '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-code"/></svg><strong>Start writing Lua</strong><small class="editor-empty-tip">Type a name to see an inline suggestion. <kbd>Tab</kbd> accepts it.</small>';
       this.scroller.appendChild(this.placeholder);
-
-      this.ensureMirror();
-
-      if (typeof ResizeObserver === 'function') {
-        this.resizeObserver = new ResizeObserver(() => {
-          this.syncMirrorStyle();
-          this.syncScroll();
-          this.updateCaret({ animate: 'instant' });
-        });
-        this.resizeObserver.observe(this.scroller);
-      }
-
-      this.textarea.wrap = 'off';
+      this.measure = document.createElement('div');
+      this.measure.className = 'editor-wrap-measure';
+      this.measure.setAttribute('aria-hidden', 'true');
+      this.scroller.appendChild(this.measure);
+      this.completions = new window.InlineCompletions(this);
       this.applyOptions();
+      this.setValue(this.textarea.value, true);
       this.bind();
-      this.suppressLineMotion = true;
+      this.resizeObserver = new ResizeObserver(() => {
+        this.metricsDirty = true;
+        this.schedule();
+      });
+      this.resizeObserver.observe(this.textarea);
+      document.fonts?.addEventListener('loadingdone', () => { this.metricsDirty = true; this.schedule(); });
+    }
+
+    get value() { return this.textarea.value; }
+    getValue() { return this.value; }
+    focus() { this.textarea.focus(); }
+    goTo(line, column) {
+      const t = this.textarea;
+      const row = this.model.row(line);
+      column = Math.min(column, row.text.length);
+      let offset = 0;
+      for (const group of this.model.blocks) {
+        if (line < group.rows.length) {
+          for (let i = 0; i < line; i++) offset += group.rows[i].text.length + 1;
+          break;
+        }
+        offset += group.size;
+        line -= group.rows.length;
+      }
+      this.completions.clear();
+      this.focus();
+      t.setSelectionRange(offset + column, offset + column);
+      const logicalLine = this.model.locate(offset, true).line;
+      t.scrollTop = this.padTop + this.rowTop(logicalLine) - t.clientHeight / 2;
+      t.scrollLeft = 0;
       this.refresh();
-      this.suppressLineMotion = false;
-    }
-
-    get value() {
-      return this.textarea.value;
-    }
-
-    setOptions(next) {
-      this.options = { ...this.options, ...(next || {}) };
-      this.applyOptions();
-      this.caretAnchor = null;
-      this.suppressLineMotion = true;
-      this.refresh();
-      this.suppressLineMotion = false;
-    }
-
-    applyOptions() {
-      this.stage.classList.toggle('wrap-on', Boolean(this.options.wrap));
-      this.stage.classList.toggle('no-gutter', !this.options.lineNumbers);
-      this.stage.style.setProperty('--tab-size', String(this.options.tabSize));
-      this.textarea.wrap = this.options.wrap ? 'soft' : 'off';
-      this.syncMirrorStyle();
-    }
-
-    setValue(value, silent) {
-      this.textarea.value = String(value ?? '');
-      this.textarea.scrollTop = 0;
-      this.textarea.scrollLeft = 0;
-      this.caretAnchor = null;
-      this.suppressLineMotion = true;
-      this.refresh();
-      this.suppressLineMotion = false;
-      this.updatePlaceholder();
-      if (!silent) this.emitChange();
-    }
-
-    getValue() {
-      return this.textarea.value;
+      // Reveal the requested visual row as well as the logical line. Only
+      // measure the target on this explicit navigation command.
+      const node = this.nodes.get(logicalLine)?.code;
+      if (!node || !column) return;
+      const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+      let text, remaining = column;
+      while ((text = walker.nextNode())) {
+        if (remaining <= text.length) {
+          const range = new Range();
+          range.setStart(text, remaining); range.collapse(true);
+          const caret = range.getBoundingClientRect(), view = t.getBoundingClientRect();
+          if (caret.bottom > view.top + t.clientHeight || caret.top < view.top)
+            t.scrollTop += caret.top - view.top - t.clientHeight / 2;
+          if (caret.right > view.left + t.clientWidth)
+            t.scrollLeft += caret.right - view.left - t.clientWidth + this.padRight;
+          break;
+        }
+        remaining -= text.length;
+      }
+      this.schedule();
     }
 
     setDirty(dirty) {
@@ -279,313 +93,195 @@
       this.dirtyState.textContent = dirty ? 'Unsaved' : 'Saved';
       this.dirtyState.classList.toggle('is-dirty', Boolean(dirty));
     }
-
-    focus() {
-      this.textarea.focus();
+    setOptions(next) {
+      this.completions.clear();
+      this.options = { ...this.options, ...next };
+      this.applyOptions();
+      this.refresh();
+    }
+    applyOptions() {
+      this.stage.classList.toggle('wrap-on', Boolean(this.options.wrap));
+      this.stage.classList.toggle('no-gutter', !this.options.lineNumbers);
+      // A whole CSS-pixel line box is exactly representable by Blink's layout units.
+      this.lineHeight = Math.round(this.options.fontSize * 1.7);
+      this.stage.style.setProperty('--editor-row-height', this.lineHeight + 'px');
+      this.stage.style.setProperty('--code-size', this.options.fontSize + 'px');
+      this.stage.style.setProperty('--tab-size', this.options.tabSize);
+      this.textarea.wrap = this.options.wrap ? 'soft' : 'off';
+      if (Boolean(this.wrapNodes.length) !== Boolean(this.options.wrap)) this.resetWrap();
+      this.metricsDirty = true;
+    }
+    setValue(value, silent) {
+      this.completions.clear();
+      this.before = null;
+      this.textarea.value = value ?? '';
+      this.snapshot = this.value; // Normalized LF, including on Windows.
+      this.model = new window.LuaDocument(this.snapshot);
+      this.resetWrap();
+      this.nodes.clear();
+      this.highlight.replaceChildren();
+      this.gutter.replaceChildren();
+      this.textarea.scrollTop = this.textarea.scrollLeft = 0;
+      this.metricsDirty = true;
+      this.refresh();
+      if (!silent) this.emitChange();
     }
 
-    refresh() {
-      this.measure();
-      this.highlight.innerHTML = highlightLua(this.textarea.value);
-      this.renderGutter();
-      this.syncScroll();
-      this.updateCursor();
-      this.updatePlaceholder();
+    // Only wrap mode needs browser layout for offscreen lines. Each measured
+    // row is plain text; font fallback, tabs and Unicode use Blink's line breaks.
+    wrapNode(text) {
+      const el = document.createElement('div');
+      el.textContent = text;
+      return el;
+    }
+    resetWrap() {
+      this.wrapNodes = [];
+      this.measure.replaceChildren();
+      if (!this.options.wrap || !this.model) return;
+      const fragment = document.createDocumentFragment();
+      for (const block of this.model.blocks) for (const row of block.rows) {
+        const node = this.wrapNode(row.text);
+        fragment.append(node);
+        this.wrapNodes.push(node);
+      }
+      this.measure.append(fragment);
+    }
+    patchWrap({ first, removed, added }) {
+      if (!this.options.wrap) return;
+      if (removed === 1 && added.length === 1) {
+        this.wrapNodes[first].textContent = added[0].text;
+        return;
+      }
+      const fragment = document.createDocumentFragment();
+      const nodes = added.map(row => this.wrapNode(row.text));
+      for (const node of nodes) fragment.append(node);
+      this.measure.insertBefore(fragment, this.wrapNodes[first]);
+      for (let i = first; i < first + removed; i++) this.wrapNodes[i].remove();
+      // A pasted file can have more rows than a function's argument limit.
+      this.wrapNodes = this.wrapNodes.slice(0, first).concat(nodes, this.wrapNodes.slice(first + removed));
+    }
+
+    applyInput(event) {
+      const value = this.value, old = this.snapshot, pre = this.before;
+      this.before = null;
+      let start, end, inserted;
+      // beforeinput captures selection replacements, paste, and ordinary
+      // backspace/delete without reading or diffing the unchanged prefix.
+      if (pre && /^(insertText|insertLineBreak|insertParagraph|insertFromPaste|deleteContentBackward|deleteContentForward|deleteByCut)$/.test(event.inputType)) {
+        start = pre.start; end = pre.end;
+        const diff = value.length - old.length;
+        if (start === end && diff < 0 && event.inputType === 'deleteContentBackward') start += diff;
+        if (start === end && diff < 0 && event.inputType === 'deleteContentForward') end -= diff;
+        const size = diff + end - start;
+        if (size >= 0 && start >= 0 && end <= old.length && this.textarea.selectionStart === start + size)
+          inserted = value.slice(start, start + size);
+      }
+      // Some engines omit beforeinput for commands, undo, IME and drag/drop.
+      // Recover the actual replacement for these cases, keeping native history.
+      if (inserted === undefined) {
+        start = 0;
+        let tail = value.length;
+        end = old.length;
+        while (start < end && start < tail && old.charCodeAt(start) === value.charCodeAt(start)) start++;
+        while (end > start && tail > start && old.charCodeAt(end - 1) === value.charCodeAt(tail - 1)) { end--; tail--; }
+        inserted = value.slice(start, tail);
+      }
+      if (start !== end || inserted) this.patchWrap(this.model.replace(start, end, inserted));
+      this.snapshot = value;
+      this.completions.onInput(event);
+      this.schedule();
+      this.emitChange();
     }
 
     schedule() {
-      if (this.frame) return;
-      this.frame = requestAnimationFrame(() => {
-        this.frame = null;
-        this.refresh();
-      });
+      if (!this.frame) this.frame = requestAnimationFrame(() => { this.frame = 0; this.refresh(); });
     }
-
-    measure() {
-      const style = getComputedStyle(this.textarea);
-      this.lineHeight = parseFloat(style.lineHeight) || 21;
-      this.padTop = parseFloat(style.paddingTop) || 16;
+    updateCursor() { this.schedule(); }
+    rowTop(line) {
+      return this.options.wrap ? this.wrapNodes[line].offsetTop : line * this.lineHeight;
     }
-
-    updatePlaceholder() {
-      this.placeholder.classList.toggle('visible', this.textarea.value.length === 0);
-    }
-
-    motionEnabled() {
-      return (
-        document.documentElement.dataset.motion !== 'off' && !this.motionQuery.matches
-      );
-    }
-
-    ensureMirror() {
-      if (this.mirror) return;
-      const mirror = document.createElement('div');
-      mirror.className = 'editor-measure';
-      mirror.setAttribute('aria-hidden', 'true');
-      const marker = document.createElement('span');
-      marker.textContent = '\u200b';
-      this.scroller.appendChild(mirror);
-      this.mirror = mirror;
-      this.mirrorCaret = marker;
-    }
-
-    syncMirrorStyle() {
-      this.ensureMirror();
-      const style = getComputedStyle(this.textarea);
-      const mirror = this.mirror;
-      const properties = [
-        'fontFamily',
-        'fontSize',
-        'fontWeight',
-        'fontStyle',
-        'fontVariant',
-        'letterSpacing',
-        'wordSpacing',
-        'lineHeight',
-        'textTransform',
-        'textIndent',
-        'textRendering',
-        'paddingTop',
-        'paddingRight',
-        'paddingBottom',
-        'paddingLeft',
-        'tabSize',
-        'direction',
-      ];
-
-      for (const property of properties) {
-        mirror.style[property] = style[property];
+    visibleLine(y) {
+      if (!this.options.wrap) return Math.max(0, Math.min(this.model.count - 1, Math.floor(y / this.lineHeight)));
+      let low = 0, high = this.model.count;
+      while (low + 1 < high) {
+        const mid = (low + high) >>> 1;
+        if (this.rowTop(mid) <= y) low = mid;
+        else high = mid;
       }
-
-      mirror.style.boxSizing = 'border-box';
-      mirror.style.width = `${this.textarea.clientWidth}px`;
-      mirror.style.whiteSpace = this.options.wrap ? 'pre-wrap' : 'pre';
-      mirror.style.overflowWrap = this.options.wrap ? 'anywhere' : 'normal';
-      mirror.style.wordBreak = 'normal';
+      return low;
     }
 
-    measureCaret() {
-      this.syncMirrorStyle();
-      const value = this.textarea.value;
-      const index = this.textarea.selectionStart;
-      const line = (value.slice(0, index).match(/\n/g) || []).length;
-      const lineStart = value.lastIndexOf('\n', index - 1) + 1;
-      const prefix = this.options.wrap ? value.slice(0, index) : value.slice(lineStart, index);
-
-      this.mirror.textContent = prefix;
-      this.mirror.appendChild(this.mirrorCaret);
-
-      const box = this.mirror.getBoundingClientRect();
-      const marker = this.mirrorCaret.getBoundingClientRect();
-      const markerOffset = (this.lineHeight - marker.height) / 2;
-
-      return {
-        x: marker.left - box.left - this.textarea.scrollLeft,
-        y: this.options.wrap
-          ? marker.top - box.top - markerOffset - this.textarea.scrollTop
-          : this.padTop + line * this.lineHeight - this.textarea.scrollTop,
-        line,
-      };
-    }
-
-    updateCaret(options) {
-      if (!this.caret) return;
-      const animate = options && options.animate ? options.animate : 'auto';
-      const focused = document.activeElement === this.textarea;
-      const collapsed = this.textarea.selectionStart === this.textarea.selectionEnd;
-
-      if (!focused || !collapsed) {
-        this.caretAnchor = null;
-        this.caret.classList.remove('visible', 'typing');
-        return;
+    refresh() {
+      if (this.metricsDirty) {
+        this.metricsDirty = false;
+        const css = getComputedStyle(this.textarea);
+        this.padTop = parseFloat(css.paddingTop);
+        this.padLeft = parseFloat(css.paddingLeft);
+        this.padRight = parseFloat(css.paddingRight);
       }
-
-      const position = this.measureCaret();
-      const previous = this.caretAnchor;
-      const columnDrift = previous && Math.abs(position.x - previous.x) > 0.35;
-      const lineDrift = previous && Math.abs(position.y - previous.y) > 0.5;
-      const visible =
-        position.y + this.lineHeight > 3 &&
-        position.y < this.scroller.clientHeight - 2 &&
-        position.x > -4 &&
-        position.x < this.scroller.clientWidth - 2;
-
-      this.caret.classList.toggle('visible', visible);
-
-      if (previous && !columnDrift && !lineDrift) return;
-
-      let duration = 0;
-      if (previous) {
-        if (animate === 'instant') duration = 0;
-        else if (animate === 'line') duration = 170;
-        else if (lineDrift) duration = 185;
-        else if (columnDrift) duration = 55;
+      const t = this.textarea, width = t.clientWidth, height = t.clientHeight;
+      if (this.options.wrap) {
+        const contentWidth = Math.max(0, width - this.padLeft - this.padRight) + 'px';
+        if (this.measure.style.width !== contentWidth) this.measure.style.width = contentWidth;
+        this.highlight.style.width = contentWidth;
+      } else this.highlight.style.removeProperty('width');
+      const top = t.scrollTop, left = t.scrollLeft;
+      const start = t.selectionStart, selected = t.selectionEnd - start;
+      const pos = this.model.locate(start, true);
+      const first = Math.max(0, this.visibleLine(top - this.padTop) - 2);
+      const last = Math.min(this.model.count - 1, this.visibleLine(top + height - this.padTop) + 2);
+      // Read layout before changing any painted row or decoration.
+      const tops = [];
+      for (let line = first; line <= last; line++) tops.push(this.rowTop(line));
+      const base = tops[0], y = this.padTop + base - top;
+      const activeVisible = pos.line >= first && pos.line <= last;
+      const activeTop = activeVisible ? tops[pos.line - first] : 0;
+      const activeHeight = activeVisible && this.options.wrap ? this.wrapNodes[pos.line].offsetHeight : this.lineHeight;
+      this.highlight.style.transform = 'translate(' + (this.padLeft - left) + 'px,' + y + 'px)';
+      for (const [line, node] of this.nodes) if (line < first || line > last) {
+        node.code.remove(); node.number.remove(); this.nodes.delete(line);
       }
-
-      if (!this.motionEnabled()) duration = 0;
-
-      this.caret.style.transitionDuration = `${duration}ms`;
-      this.caret.style.height = `${this.lineHeight}px`;
-      this.caret.style.transform = `translate3d(${position.x}px, ${position.y}px, 0)`;
-      this.caretAnchor = position;
-
-      if (visible) this.pulseCaret();
-    }
-
-    pulseCaret() {
-      if (!this.caret) return;
-      this.caret.classList.add('typing');
-      window.clearTimeout(this.caretTimer);
-      this.caretTimer = window.setTimeout(() => {
-        this.caret.classList.remove('typing');
-      }, 520);
-    }
-
-    hideCaret() {
-      if (!this.caret) return;
-      this.caret.classList.remove('visible', 'typing');
-      window.clearTimeout(this.caretTimer);
-    }
-
-    renderGutter() {
-      if (!this.options.lineNumbers) return;
-      const count = this.textarea.value.split('\n').length;
-
-      if (count !== this.gutterLineCount) {
-        this.gutterLineCount = count;
-        const lines = new Array(count);
-        for (let i = 0; i < count; i += 1) {
-          lines[i] = `<div class="gl">${i + 1}</div>`;
+      for (let line = first; line <= last; line++) {
+        const row = this.model.row(line);
+        let node = this.nodes.get(line);
+        if (!node) {
+          const code = document.createElement('div'), number = document.createElement('div');
+          code.className = 'syntax-row'; number.className = 'gl';
+          code.dataset.line = number.dataset.line = String(line + 1);
+          number.textContent = String(line + 1);
+          this.highlight.append(code); this.gutter.append(number);
+          this.nodes.set(line, node = { code, number });
         }
-        this.gutter.innerHTML = lines.join('');
-        this.gutterLineEls = [...this.gutter.children];
-        this.activeLine = -1;
+        if (node.tokens !== row.tokens) {
+          node.code.innerHTML = syntax(row);
+          node.tokens = row.tokens;
+        }
+        node.code.style.top = (tops[line - first] - base) + 'px';
+        node.number.style.transform = 'translateY(' + (y + tops[line - first] - base) + 'px)';
+        node.number.classList.toggle('active', line === pos.line);
       }
-
-      this.setActiveLine(this.currentLineIndex());
-    }
-
-    currentLineIndex() {
-      const upto = this.textarea.value.slice(0, this.textarea.selectionStart);
-      return (upto.match(/\n/g) || []).length;
-    }
-
-    setActiveLine(line) {
-      if (line === this.activeLine) return;
-      if (this.gutterLineEls[this.activeLine]) {
-        this.gutterLineEls[this.activeLine].classList.remove('active');
-      }
-      if (this.gutterLineEls[line]) {
-        this.gutterLineEls[line].classList.add('active');
-      }
-      this.activeLine = line;
-      this.positionCurrentLine(!this.suppressLineMotion);
-    }
-
-    positionCurrentLine(animate = false) {
-      const enabled =
-        this.options.highlightLine && !this.options.wrap && this.textarea.value.length >= 0;
-      this.currentLine.style.display = enabled ? 'block' : 'none';
-      if (!enabled) return;
-
-      const scrollTop = this.textarea.scrollTop;
-      const top = this.padTop + this.currentLineIndex() * this.lineHeight - scrollTop;
-      const height = this.lineHeight;
-      const viewport = this.stage.clientHeight;
-
-      if (top < -height || top > viewport) {
-        this.currentLine.style.visibility = 'hidden';
-        return;
-      }
-
-      const from =
-        animate && this.motionEnabled()
-          ? this.currentLine.getBoundingClientRect().top -
-            this.scroller.getBoundingClientRect().top
-          : null;
-
-      this.currentLine.style.visibility = 'visible';
-      this.currentLine.style.transform = `translateY(${top}px)`;
-      this.currentLine.style.height = `${height}px`;
-
-      if (from !== null && Math.abs(from - top) > 0.5) {
-        this.lineAnimation?.cancel();
-        this.lineAnimation = this.currentLine.animate(
-          [
-            { transform: `translateY(${from}px)` },
-            { transform: `translateY(${top}px)` },
-          ],
-          {
-            duration: 190,
-            easing: 'cubic-bezier(0.22, 0.82, 0.2, 1)',
-          },
-        );
-      }
-    }
-
-    updateCursor(options) {
-      const start = this.textarea.selectionStart;
-      const end = this.textarea.selectionEnd;
-      const before = this.textarea.value.slice(0, start);
-      const line = (before.match(/\n/g) || []).length + 1;
-      const lastBreak = before.lastIndexOf('\n');
-      const column = start - lastBreak;
-
-      if (this.cursorInfo) {
-        const selected = end - start;
-        this.cursorInfo.textContent = `Ln ${line}, Col ${column}${
-          selected > 0 ? ` · ${selected} selected` : ''
-        }`;
-      }
-
-      this.setActiveLine(line - 1);
-      this.updateCaret(options);
-    }
-
-    syncScroll() {
-      const top = this.textarea.scrollTop;
-      const left = this.textarea.scrollLeft;
-      this.highlight.style.transform = `translate(${-left}px, ${-top}px)`;
-      this.gutter.scrollTop = top;
-      this.positionCurrentLine();
+      this.currentLine.hidden = !this.options.highlightLine || !activeVisible;
+      this.currentLine.style.transform = 'translateY(' + (this.padTop + activeTop - top) + 'px)';
+      this.currentLine.style.height = activeHeight + 'px';
+      const info = 'Ln ' + (pos.line + 1) + ', Col ' + (pos.column + 1) + (selected ? ' · ' + selected + ' selected' : '');
+      if (this.cursorInfo && this.cursorInfo.textContent !== info) this.cursorInfo.textContent = info;
+      this.placeholder.classList.toggle('visible', this.snapshot.length === 0);
+      this.completions.onSelection();
+      this.completions.place(this.nodes.get(pos.line)?.code, pos.column);
     }
 
     bind() {
-      this.textarea.addEventListener('input', () => {
-        this.schedule();
-        this.emitChange();
+      const t = this.textarea;
+      t.addEventListener('beforeinput', () => {
+        this.before = { start: t.selectionStart, end: t.selectionEnd };
       });
-
-      this.textarea.addEventListener('scroll', () => {
-        this.syncScroll();
-        this.updateCaret({ animate: 'instant' });
-      });
-
-      this.textarea.addEventListener('keydown', (event) => this.onKeyDown(event));
-      this.textarea.addEventListener('keyup', () => this.updateCursor());
-      this.textarea.addEventListener('click', () => this.updateCursor());
-      this.textarea.addEventListener('select', () => this.updateCursor());
-      this.textarea.addEventListener('focus', () => {
-        this.caretAnchor = null;
-        this.updateCursor({ animate: 'instant' });
-      });
-      this.textarea.addEventListener('blur', () => {
-        this.caretAnchor = null;
-        this.hideCaret();
-        this.updatePlaceholder();
-      });
-
-      document.addEventListener('selectionchange', () => {
-        if (document.activeElement === this.textarea) this.updateCursor();
-      });
+      t.addEventListener('input', event => this.applyInput(event));
+      t.addEventListener('scroll', () => this.schedule(), { passive: true });
+      t.addEventListener('keydown', event => this.onKeyDown(event));
+      for (const name of ['select', 'focus', 'keyup', 'click', 'selectionchange']) t.addEventListener(name, () => this.schedule());
+      document.addEventListener('selectionchange', () => { if (document.activeElement === t) this.schedule(); });
     }
-
-    emitChange() {
-      if (typeof this.callbacks.onChange === 'function') {
-        this.callbacks.onChange(this.textarea.value);
-      }
-    }
-
+    emitChange() { this.callbacks.onChange?.(this.snapshot); }
     save() {
       if (typeof this.callbacks.onSave === 'function') this.callbacks.onSave();
     }
@@ -594,8 +290,18 @@
       if (typeof this.callbacks.onRun === 'function') this.callbacks.onRun();
     }
 
+    acceptCompletion(suffix) {
+      // Moving the selection ends Blink's current typing command, giving the
+      // completion an undo boundary even when Tab follows the last key directly.
+      const t = this.textarea, offset = t.selectionStart;
+      t.setSelectionRange(offset - 1, offset);
+      t.setSelectionRange(offset, offset);
+      this.insertText(suffix);
+    }
+
     insertText(text, selectStart, selectEnd) {
       this.textarea.focus();
+      this.before = { start: this.textarea.selectionStart, end: this.textarea.selectionEnd };
       let inserted = false;
 
       try {
@@ -616,10 +322,10 @@
       }
 
       this.schedule();
-      this.updateCursor();
     }
 
     onKeyDown(event) {
+      if (event.isComposing || this.completions.composing || this.completions.keyDown(event)) return;
       const ctrl = event.ctrlKey || event.metaKey;
       const key = event.key;
 
@@ -820,6 +526,9 @@
     }
   }
 
-  LuaEditor.highlight = highlightLua;
+  LuaEditor.highlight = text => {
+    const doc = new window.LuaDocument(text);
+    return doc.blocks.flatMap(group => group.rows.map(syntax)).join('\n');
+  };
   window.LuaEditor = LuaEditor;
 })();

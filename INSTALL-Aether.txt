@@ -1,0 +1,41 @@
+Aether editor and app icon update
+
+1. Close Aether.
+2. Open the Aether project folder that contains package.json and main.js.
+3. Extract the contents of this ZIP directly into that folder. Allow Windows
+   to merge renderer and replace the matching files. After extraction you
+   should see renderer/lua-document.js beside renderer/editor.js.
+4. Start the project with npm start. On a fresh checkout, run npm ci first.
+
+The ZIP combines repository revision 9465d853 with the supplied Flux renderer.
+It includes the wallpaper, assets, editor and saved-script controls. If you
+normally launch an installed Windows build, run npm run dist on Windows and
+install the updated build to use these changes there.
+
+In the editor, type local players and press Tab to accept the service lookup.
+Ctrl+Space asks for a suggestion, Esc dismisses it and Ctrl+Z undoes acceptance.
+The Inline suggestions switch is under Settings > Editor.
+
+To remove a saved script, click the trash icon beside its name in the editor
+sidebar or on its card under Scripts > Library. The existing delete-confirmation
+setting applies. An open tab keeps its text and can be saved again.
+
+The new white Aether icon is included in assets/app-icon.svg,
+assets/app-icon.png and assets/app-icon.ico. Rebuild with npm run dist
+on Windows and install the resulting build to update your installed copy.
+
+Click the pencil beside a saved script in the editor sidebar or Library to rename it.
+
+Coding assistant
+Open Editor > Ask AI. Select code first to include it, or ask a question
+without code. Each Ask starts a fresh question. Review or copy the response.
+For OpenCode 1.x (tested with 1.19.0), open a terminal in an empty folder
+and run: opencode serve --hostname 127.0.0.1 --port 4096
+Use the default server model or enter provider/model. Your existing OpenCode
+installation supplies its own model credentials. If using server authentication,
+the default username is opencode; enter the server password under Connection.
+The selected model provider may be hosted and may charge for usage.
+Alternatively select the local OpenAI-compatible option, enter the port and
+model name, and start your existing chat-completions server. For Ollama,
+the default local port is 11434. Passwords and API keys are kept in memory.
+Ctrl+Enter sends a question. Ctrl+G in the editor jumps to a line or line:column.

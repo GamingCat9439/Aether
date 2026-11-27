@@ -25,6 +25,7 @@
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11.5" rx="2"/><path d="M16 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2.5"/></symbol>
     <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3.5v5M15 3.5v5M6 8.5h12v3a6 6 0 0 1-6 6 6 6 0 0 1-6-6v-3ZM12 17.5V21"/></symbol>
     <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5M13 15h4"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="m15 5 4 4M4 20l4-1 12-12a2.8 2.8 0 0 0-4-4L4 15z"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V4h5v3M6.5 7l1 13h9l1-13M10 10.5V17M14 10.5V17"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4.5V11h-6.5"/></symbol>
     <symbol id="i-minimize" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
@@ -51,23 +52,28 @@
   </svg>
 
   <div class="app">
+    <div id="fluxWallpaper" class="flux-wallpaper" aria-hidden="true" hidden></div>
     <header class="titlebar">
       <div class="tb-left">
         <div class="brand">
           <span class="brand-mark"><img src="../assets/app-icon.svg" alt="" aria-hidden="true" /></span>
           <span class="brand-name">Aether</span>
-          <span class="brand-version" id="brandVersion">1.0.0</span>
+          <span class="brand-version" id="brandVersion">—</span>
         </div>
       </div>
 
       <nav class="nav" id="nav" aria-label="Main navigation">
-        <button data-page="home" class="active">Home</button>
-        <button data-page="editor">Editor</button>
-        <button data-page="scripts">Scripts</button>
-        <button data-page="settings">Settings</button>
+        <button data-page="home" class="active" aria-current="page"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-home"/></svg> Home</button>
+        <button data-page="editor"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-code"/></svg> Editor</button>
+        <button data-page="scripts"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-folder"/></svg> Scripts</button>
+        <button data-page="settings"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-settings"/></svg> Settings</button>
       </nav>
 
       <div class="tb-right">
+        <button id="findLibrary" class="find-library" title="Search library (Ctrl+K)" aria-label="Search library" aria-keyshortcuts="Control+k Meta+k">
+          <svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+          <span>Search library</span><kbd>Ctrl K</kbd>
+        </button>
         <button class="bridge-pill" id="bridgePill" title="View connected clients">
           <span class="status-dot" id="bridgeDot"></span>
           <span id="bridgeLabel">Bridge</span>
@@ -88,29 +94,16 @@
     <main>
       <section class="page page-home active" id="page-home" data-page="home">
         <div class="home-shell">
+          <!-- Lunar photograph AS11-44-6665, NASA / Johnson Space Center. -->
           <section class="hero">
-            <div class="hero-glow"></div>
             <div class="hero-content">
-              <div class="eyebrow" id="homeDate">—</div>
-              <h1 id="greeting">Good evening, <span id="userNameInline">there</span></h1>
-              <p class="hero-sub">Everything you need in one workspace — write, run, and watch your scripts live.</p>
+              <div class="hero-date" id="homeDate">—</div>
+              <h1 id="greeting">Welcome, <span id="userNameInline">there</span></h1>
+              <p class="hero-sub" id="homeSummary"></p>
               <div class="hero-actions">
-                <button class="btn primary" data-go="editor"><svg class="icon" viewBox="0 0 24 24"><use href="#i-play"/></svg> Open editor</button>
-                <button class="btn" data-go="scripts"><svg class="icon" viewBox="0 0 24 24"><use href="#i-grid"/></svg> Browse scripts</button>
+                <button class="btn primary" data-go="editor"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-code"/></svg> Open editor</button>
+                <button class="btn" id="homeOpenFile"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-folder"/></svg> Open file</button>
               </div>
-            </div>
-            <div class="hero-side">
-              <div class="hero-connect-head">
-                <span class="status-dot" id="homeDot"></span>
-                <span id="homeBridgeLabel">Starting bridge…</span>
-                <button class="icon-btn tiny" id="homeCopyLoader" title="Copy loader script"><svg class="icon" viewBox="0 0 24 24"><use href="#i-copy"/></svg></button>
-              </div>
-              <div class="hero-stats">
-                <div><strong id="homeClients">0</strong><span>clients</span></div>
-                <div><strong id="homeRuns">0</strong><span>executions</span></div>
-                <div><strong id="homePort">7963</strong><span>port</span></div>
-              </div>
-              <button class="btn subtle full" id="homeConnect">Connect a client</button>
             </div>
           </section>
 
@@ -118,30 +111,41 @@
             <div class="home-main">
               <section class="panel">
                 <header class="panel-head">
-                  <h2>Recent scripts</h2>
-                  <button class="link" data-go="scripts">View library <svg class="icon" viewBox="0 0 24 24"><use href="#i-arrow-right"/></svg></button>
+                  <h2>Recently saved</h2>
+                  <button class="link" data-go="scripts" data-scripts-view="library">View library <svg class="icon" viewBox="0 0 24 24"><use href="#i-arrow-right"/></svg></button>
                 </header>
                 <div class="recent-grid" id="homeRecent"></div>
               </section>
               <section class="panel">
                 <header class="panel-head">
                   <h2>From the hub</h2>
-                  <button class="link" data-go="scripts">Browse all <svg class="icon" viewBox="0 0 24 24"><use href="#i-arrow-right"/></svg></button>
+                  <button class="link" data-go="scripts" data-scripts-view="hub">Browse all <svg class="icon" viewBox="0 0 24 24"><use href="#i-arrow-right"/></svg></button>
                 </header>
                 <div class="pick-list" id="homePicks"></div>
               </section>
             </div>
             <aside class="home-side">
               <section class="panel">
-                <header class="panel-head">
-                  <h2>Clients</h2>
-                  <span class="meta-pill" id="homeClientCount">0</span>
-                </header>
-                <div class="client-mini" id="homeClientsList"></div>
+                <header class="panel-head"><h2>Session activity</h2><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-clock"/></svg></header>
+                <ul class="activity" id="homeActivity"></ul>
               </section>
               <section class="panel">
-                <header class="panel-head"><h2>Session</h2></header>
-                <ul class="activity" id="homeActivity"></ul>
+                <header class="panel-head"><h2>Connection</h2><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-plug"/></svg></header>
+                <div class="home-connection">
+                  <div class="connection-status">
+                    <span class="status-dot" id="homeDot"></span>
+                    <span id="homeBridgeLabel">Starting bridge…</span>
+                    <button class="icon-btn tiny" id="homeCopyLoader" title="Copy loader script"><svg class="icon" viewBox="0 0 24 24"><use href="#i-copy"/></svg></button>
+                  </div>
+                  <div class="connection-stats">
+                    <div><strong id="homeClients">0</strong><span>clients</span></div>
+                    <div><strong id="homeRuns">0</strong><span>executions</span></div>
+                    <div><strong id="homePort">7963</strong><span>port</span></div>
+                  </div>
+                  <button class="btn subtle full" id="homeConnect">Connect a client</button>
+                </div>
+                <span id="homeClientCount" hidden></span>
+                <div class="client-mini" id="homeClientsList" hidden></div>
               </section>
             </aside>
           </div>
@@ -157,7 +161,7 @@
             </div>
             <div class="explorer-search">
               <svg class="icon" viewBox="0 0 24 24"><use href="#i-search"/></svg>
-              <input id="explorerFilter" placeholder="Filter scripts" />
+              <input type="search" aria-label="Filter scripts" id="explorerFilter" placeholder="Filter scripts" />
             </div>
             <div class="explorer-tree" id="explorerTree"></div>
             <div class="explorer-foot">
@@ -176,6 +180,7 @@
                   <span id="targetLabel">All clients</span>
                   <svg class="icon" viewBox="0 0 24 24"><use href="#i-chevron-down"/></svg>
                 </button>
+                <button class="btn small ghost" id="askAI" aria-haspopup="dialog">Ask AI</button>
                 <button class="icon-btn" id="saveDoc" title="Save to library (Ctrl+S)"><svg class="icon" viewBox="0 0 24 24"><use href="#i-save"/></svg></button>
                 <button class="btn primary run-btn" id="runBtn"><svg class="icon" viewBox="0 0 24 24"><use href="#i-play"/></svg> Run <span class="kbd">Ctrl ↵</span></button>
               </div>
@@ -187,8 +192,8 @@
                 <div class="editor-scroller">
                   <div class="editor-current" id="currentLine"></div>
                   <pre class="editor-highlight" id="highlight" aria-hidden="true"></pre>
-                  <textarea id="code" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Lua editor"></textarea>
-                  <div class="editor-caret" id="editorCaret" aria-hidden="true"><i></i></div>
+                  <textarea id="code" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Lua editor" aria-keyshortcuts="Control+Space Meta+Space"></textarea>
+                  <span class="completion-announcement" id="completionAnnouncement" role="status" aria-live="polite"></span>
                 </div>
               </div>
 
@@ -199,10 +204,14 @@
                   <span>Lua</span>
                   <span class="sb-sep"></span>
                   <span id="dirtyState">Saved</span>
+                  <span id="inlineCompletionHint" class="completion-hint" hidden title="Tab accepts · Esc dismisses · Alt+[ and Alt+] cycle suggestions">
+                    <span class="completion-accept"><kbd>Tab</kbd> accept</span><span id="completionSource"></span> <span id="completionCount" hidden></span>
+                  </span>
                 </div>
                 <div class="sb-right">
                   <span id="sbBridge">0 clients</span>
-                  <button class="link tiny" id="toggleConsole">Console</button>
+                  <button class="link tiny" id="editorFocus" aria-pressed="false" title="Hide the explorer and console">Focus mode</button>
+                  <button class="link tiny" id="toggleConsole" aria-controls="consolePanel" aria-expanded="true">Console</button>
                 </div>
               </div>
 
@@ -236,8 +245,8 @@
               <p>Bundled utilities plus community scripts from ScriptBlox and RobloxScripts.</p>
             </div>
             <div class="seg" id="scriptsTabs">
-              <button data-view="hub" class="active">Script hub</button>
-              <button data-view="library">Library <span class="badge-count" id="libraryBadge">0</span></button>
+              <button data-view="hub" class="active" aria-pressed="true">Script hub</button>
+              <button data-view="library" aria-pressed="false">Library <span class="badge-count" id="libraryBadge">0</span></button>
             </div>
           </header>
 
@@ -245,7 +254,7 @@
             <div class="toolbar">
               <div class="searchbox">
                 <svg class="icon" viewBox="0 0 24 24"><use href="#i-search"/></svg>
-                <input id="hubSearch" placeholder="Search scripts" />
+                <input type="search" aria-label="Search scripts" id="hubSearch" placeholder="Search scripts" />
               </div>
               <div class="filter-chips hub-sources" id="hubSources"></div>
             </div>
@@ -266,7 +275,7 @@
             <div class="toolbar">
               <div class="searchbox">
                 <svg class="icon" viewBox="0 0 24 24"><use href="#i-search"/></svg>
-                <input id="librarySearch" placeholder="Search library" />
+                <input type="search" aria-label="Search library" id="librarySearch" placeholder="Search library" />
               </div>
               <button class="btn" id="libraryNew"><svg class="icon" viewBox="0 0 24 24"><use href="#i-plus"/></svg> New script</button>
             </div>
@@ -320,17 +329,17 @@
                 <div class="setting-group">
                   <div class="setting-row">
                     <div>
-                      <div class="setting-title">Restore open tabs</div>
+                      <div class="setting-title" id="toggleRestoreLabel">Restore open tabs</div>
                       <p>Reopen your workspace exactly as you left it.</p>
                     </div>
-                    <button class="switch" id="toggleRestore" data-toggle="restoreTabs" role="switch" aria-checked="true"><span></span></button>
+                    <button class="switch" id="toggleRestore" aria-labelledby="toggleRestoreLabel" data-toggle="restoreTabs" role="switch" aria-checked="true"><span></span></button>
                   </div>
                   <div class="setting-row">
                     <div>
-                      <div class="setting-title">Confirm before deleting</div>
+                      <div class="setting-title" id="toggleConfirmLabel">Confirm before deleting</div>
                       <p>Ask before removing a script from your library.</p>
                     </div>
-                    <button class="switch" id="toggleConfirm" data-toggle="confirmDelete" role="switch" aria-checked="true"><span></span></button>
+                    <button class="switch" id="toggleConfirm" aria-labelledby="toggleConfirmLabel" data-toggle="confirmDelete" role="switch" aria-checked="true"><span></span></button>
                   </div>
                 </div>
 
@@ -350,24 +359,31 @@
                 <div class="setting-group spaced">
                   <div class="setting-row">
                     <div>
-                      <div class="setting-title">Ambient glow</div>
+                      <div class="setting-title" id="toggleFluxLabel">Flux wallpaper</div>
+                      <p>Fine lines drift behind the glass and pause when Aether loses focus.</p>
+                    </div>
+                    <button class="switch" id="toggleFluxWallpaper" aria-labelledby="toggleFluxLabel" role="switch" aria-checked="true"><span></span></button>
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="setting-title" id="toggleGlowLabel">Ambient glow</div>
                       <p>Soft colour behind the workspace.</p>
                     </div>
-                    <button class="switch" id="toggleGlow" data-toggle="glow" role="switch" aria-checked="true"><span></span></button>
+                    <button class="switch" id="toggleGlow" aria-labelledby="toggleGlowLabel" data-toggle="glow" role="switch" aria-checked="true"><span></span></button>
                   </div>
                   <div class="setting-row">
                     <div>
-                      <div class="setting-title">Compact layout</div>
+                      <div class="setting-title" id="toggleCompactLabel">Compact layout</div>
                       <p>Tighter spacing on smaller screens.</p>
                     </div>
-                    <button class="switch" id="toggleCompact" data-toggle="compact" role="switch" aria-checked="false"><span></span></button>
+                    <button class="switch" id="toggleCompact" aria-labelledby="toggleCompactLabel" data-toggle="compact" role="switch" aria-checked="false"><span></span></button>
                   </div>
                   <div class="setting-row">
                     <div>
-                      <div class="setting-title">Interface animations</div>
+                      <div class="setting-title" id="toggleMotionLabel">Interface animations</div>
                       <p>Page transitions and small hover effects.</p>
                     </div>
-                    <button class="switch" id="toggleMotion" data-toggle="motion" role="switch" aria-checked="true"><span></span></button>
+                    <button class="switch" id="toggleMotion" aria-labelledby="toggleMotionLabel" data-toggle="motion" role="switch" aria-checked="true"><span></span></button>
                   </div>
                 </div>
               </section>
@@ -396,31 +412,38 @@
                   </div>
                   <div class="setting-row">
                     <div>
-                      <div class="setting-title">Word wrap</div>
+                      <div class="setting-title" id="toggleWrapLabel">Word wrap</div>
                       <p>Wrap long lines. Hides the line number gutter.</p>
                     </div>
-                    <button class="switch" id="toggleWrap" data-toggle="editor.wrap" role="switch" aria-checked="false"><span></span></button>
+                    <button class="switch" id="toggleWrap" aria-labelledby="toggleWrapLabel" data-toggle="editor.wrap" role="switch" aria-checked="false"><span></span></button>
                   </div>
                   <div class="setting-row">
                     <div>
-                      <div class="setting-title">Line numbers</div>
+                      <div class="setting-title" id="toggleLineNumbersLabel">Line numbers</div>
                       <p>Show the gutter beside the editor.</p>
                     </div>
-                    <button class="switch" id="toggleLineNumbers" data-toggle="editor.lineNumbers" role="switch" aria-checked="true"><span></span></button>
+                    <button class="switch" id="toggleLineNumbers" aria-labelledby="toggleLineNumbersLabel" data-toggle="editor.lineNumbers" role="switch" aria-checked="true"><span></span></button>
                   </div>
                   <div class="setting-row">
                     <div>
-                      <div class="setting-title">Highlight current line</div>
+                      <div class="setting-title" id="toggleHighlightLineLabel">Highlight current line</div>
                       <p>Tint the line where the caret sits.</p>
                     </div>
-                    <button class="switch" id="toggleHighlightLine" data-toggle="editor.highlightLine" role="switch" aria-checked="true"><span></span></button>
+                    <button class="switch" id="toggleHighlightLine" aria-labelledby="toggleHighlightLineLabel" data-toggle="editor.highlightLine" role="switch" aria-checked="true"><span></span></button>
                   </div>
                   <div class="setting-row">
                     <div>
-                      <div class="setting-title">Auto indent</div>
+                      <div class="setting-title" id="inlineSuggestionsLabel">Inline suggestions</div>
+                      <p>Complete names from this file and Lua libraries. Tab accepts, Esc dismisses, and Ctrl+Space requests a suggestion.</p>
+                    </div>
+                    <button class="switch" id="toggleInlineSuggestions" aria-labelledby="inlineSuggestionsLabel" role="switch" aria-checked="true"><span></span></button>
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <div class="setting-title" id="toggleAutoIndentLabel">Auto indent</div>
                       <p>Indent after blocks and keep the previous line's depth.</p>
                     </div>
-                    <button class="switch" id="toggleAutoIndent" data-toggle="editor.autoIndent" role="switch" aria-checked="true"><span></span></button>
+                    <button class="switch" id="toggleAutoIndent" aria-labelledby="toggleAutoIndentLabel" data-toggle="editor.autoIndent" role="switch" aria-checked="true"><span></span></button>
                   </div>
                 </div>
               </section>
@@ -444,8 +467,8 @@
                       <input id="bridgePort" inputmode="numeric" value="7963" />
                     </label>
                     <div class="field">
-                      <span>Start automatically</span>
-                      <button class="switch" id="bridgeEnabled" role="switch" aria-checked="true"><span></span></button>
+                      <span id="bridgeEnabledLabel">Start automatically</span>
+                      <button class="switch" id="bridgeEnabled" aria-labelledby="bridgeEnabledLabel" role="switch" aria-checked="true"><span></span></button>
                     </div>
                   </div>
                   <div class="bar">
@@ -488,7 +511,7 @@
                   <div class="about-mark"><svg viewBox="0 0 24 24"><use href="#i-mark"/></svg></div>
                   <div>
                     <h2>Aether</h2>
-                    <p>Version <span id="aboutVersion">1.0.0</span> · Lua workspace</p>
+                    <p>Version <span id="aboutVersion">—</span> · Lua workspace</p>
                   </div>
                 </div>
 
@@ -496,7 +519,6 @@
                   <div class="kv"><span>Electron</span><span id="aboutElectron">—</span></div>
                   <div class="kv"><span>Chromium</span><span id="aboutChrome">—</span></div>
                   <div class="kv"><span>Platform</span><span id="aboutPlatform">—</span></div>
-                  <div class="kv"><span>Updates</span><span id="updateStatus">Checking…</span></div>
                   <div class="kv"><span>Data folder</span><button class="link" id="openData">Open folder <svg class="icon" viewBox="0 0 24 24"><use href="#i-external"/></svg></button></div>
                 </div>
 
@@ -504,9 +526,12 @@
                   <div class="setting-head-row">
                     <div>
                       <div class="setting-title">Software updates</div>
-                      <p>Aether checks for the latest GitHub release automatically.</p>
+                      <p id="updateStatus" role="status">Checking for updates…</p>
                     </div>
-                    <button class="btn small" id="checkUpdates"><svg class="icon" viewBox="0 0 24 24"><use href="#i-refresh"/></svg> Check now</button>
+                    <div class="bar">
+                      <button class="btn small primary" id="viewRelease" hidden>View release</button>
+                      <button class="btn small" id="checkUpdates"><svg class="icon" viewBox="0 0 24 24"><use href="#i-refresh"/></svg> Check now</button>
+                    </div>
                   </div>
                 </div>
 
@@ -516,6 +541,10 @@
                     <div><span>Run current script</span><span class="keys"><kbd>Ctrl</kbd><kbd>Enter</kbd></span></div>
                     <div><span>Save to library</span><span class="keys"><kbd>Ctrl</kbd><kbd>S</kbd></span></div>
                     <div><span>Toggle comment</span><span class="keys"><kbd>Ctrl</kbd><kbd>/</kbd></span></div>
+                    <div><span>Go to line or column</span><span class="keys"><kbd>Ctrl</kbd><kbd>G</kbd></span></div>
+                    <div><span>Request an inline suggestion</span><span class="keys"><kbd>Ctrl</kbd><kbd>Space</kbd></span></div>
+                    <div><span>Accept or dismiss a suggestion</span><span class="keys"><kbd>Tab</kbd> / <kbd>Esc</kbd></span></div>
+                    <div><span>Previous or next suggestion</span><span class="keys"><kbd>Alt</kbd><kbd>[</kbd> / <kbd>]</kbd></span></div>
                     <div><span>Close dialog</span><span class="keys"><kbd>Esc</kbd></span></div>
                   </div>
                 </div>
@@ -546,12 +575,49 @@
       </footer>
     </div>
 
-    <div class="modal-backdrop" id="modalRoot" hidden></div>
+    <div class="modal-backdrop" id="modalRoot" role="dialog" aria-modal="true" aria-label="Aether dialog" hidden></div>
     <div class="toast-host" id="toastHost"></div>
   </div>
 
   <script src="hub.js"></script>
+  <script src="lua-document.js"></script>
+  <script src="inline-completions.js"></script>
   <script src="editor.js"></script>
+  <script src="flux-wallpaper.js"></script>
+  <script src="home-sky.js"></script>
+  <script src="workspace-navigation.js"></script>
+  <script src="workspace-ui.js"></script>
+  <dialog id="hubDetail" aria-labelledby="hubDetailTitle">
+    <div class="detail-bar">
+      <button class="btn small ghost" id="hubBack" autofocus><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"/></svg> Back to hub</button>
+      <span id="hubDetailProvider"></span>
+    </div>
+    <div id="hubDetailBody"></div>
+  </dialog>
+
+  <dialog id="assistantDialog" aria-labelledby="assistantTitle">
+    <header><h2 id="assistantTitle">Coding assistant</h2><button class="icon-btn" id="closeAI" aria-label="Close assistant">✕</button></header>
+    <details id="aiConnection"><summary>Connection</summary>
+      <div class="ai-fields">
+        <label>Provider<select id="aiProvider"><option value="opencode">OpenCode 1.x</option><option value="compatible">OpenAI-compatible local server</option></select></label>
+        <label>Local port<input id="aiPort" type="number" min="1" max="65535" value="4096"></label>
+        <label>Model<input id="aiModel" maxlength="200" placeholder="Server default"></label>
+        <label id="aiSecretLabel"><span>Server password (optional)</span><input type="password" id="aiSecret" autocomplete="off" maxlength="1024"></label>
+      </div>
+      <small id="aiSetup"></small>
+    </details>
+    <label for="aiQuestion">Question</label>
+    <textarea id="aiQuestion" rows="3" maxlength="4000" placeholder="How could I simplify this function?"></textarea>
+    <label id="aiContext">
+      <input type="checkbox" id="aiAttach">
+      <svg class="attach-check" aria-hidden="true" viewBox="0 0 16 16"><path d="m3.5 8 3 3 6-6" pathLength="1"/></svg>
+      <span></span>
+    </label>
+    <small>Your provider receives your question and any attached selection.</small>
+    <div class="ai-actions"><button class="btn primary" id="aiSend">Ask</button><button class="btn" id="aiCancel" hidden>Stop</button><button class="btn" id="aiCopy" hidden>Copy answer</button></div>
+    <div role="status" id="aiStatus"></div><pre id="aiAnswer" hidden></pre>
+  </dialog>
+  <script src="assistant-ui.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

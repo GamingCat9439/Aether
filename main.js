@@ -444,6 +444,7 @@ function createWindow() {
 }
 
 function registerIpc() {
+  require('./coding-assistant').registerAssistant(ipcMain);
   ipcMain.handle('config:get', () => runtime.config);
 
   ipcMain.handle('config:set', (_event, input) => {
@@ -467,7 +468,13 @@ function registerIpc() {
 
   ipcMain.handle('scripts:get', () => sanitizeScripts(readJson('scripts.json', [])));
   ipcMain.handle('scripts:set', (_event, scripts) => {
-    writeJson('scripts.json', sanitizeScripts(scripts));
+    // Commit the whole library atomically. IPC rejects on a disk error so the
+    // renderer can keep the previous library and let the user retry.
+    const target = storagePath('scripts.json');
+    const temp = target + '.tmp';
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    fs.writeFileSync(temp, JSON.stringify(sanitizeScripts(scripts), null, 2), 'utf8');
+    fs.renameSync(temp, target);
     return true;
   });
 
