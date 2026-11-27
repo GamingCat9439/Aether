@@ -1,0 +1,24 @@
+Aether 1.2.0 Windows updater fix
+
+1. Close Aether and extract this ZIP into your Aether project folder beside
+   package.json. Allow the matching files to be replaced.
+2. To run the source version, run npm ci on a fresh checkout, then npm start.
+   Go to Settings > About > Software updates > Check now.
+3. If you use the installed Windows app, run npm run dist on Windows, then
+   run the new Aether Setup installer from dist once. Extracting source files
+   alone does not update an installed copy.
+
+The fixed app compares the installed version with the latest published GitHub
+release. The existing 1.2 tag means 1.2.0. Commits on main and assets replaced
+under the same version do not trigger an update.
+
+For your next release, bump package.json and the lockfile (for example,
+npm version patch --no-git-tag-version for 1.2.1), run npm test and npm run dist,
+then publish the generated NSIS setup executable on GamingCat9439/Aether as
+the latest stable GitHub release with a matching version tag, such as v1.2.1.
+Keep the builder's versioned installer name. GitHub provides the asset digest.
+
+On an installed Windows build, choose Download update, then Run installer in
+Settings > About and finish the setup wizard. Source runs and releases without
+a compatible, verifiable installer offer View release. The automated updater
+tests run with npm test.

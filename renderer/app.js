@@ -280,6 +280,8 @@
     openData: $('#openData'),
     resetSettings: $('#resetSettings'),
     checkUpdates: $('#checkUpdates'),
+    updateAction: $('#updateAction'),
+    viewRelease: $('#viewRelease'),
     updateStatus: $('#updateStatus'),
 
     clientsPopover: $('#clientsPopover'),
@@ -324,6 +326,8 @@
     hubTimer: null,
     libraryQuery: '',
     scriptsView: 'hub',
+    update: null,
+    promptedVersion: '',
     sessionTimer: null,
     configTimer: null,
     portTimer: null,
@@ -1000,10 +1004,9 @@
 
     el.checkUpdates.addEventListener('click', () => checkForUpdates(true));
 
-    api.onUpdateAvailable?.((result) => {
-      handleUpdateResult(result);
-      showUpdateModal(result);
-    });
+    api.onUpdateStatus(handleUpdateResult);
+    el.updateAction.addEventListener('click', runUpdateAction);
+    el.viewRelease.addEventListener('click', openRelease);
 
     el.resetSettings.addEventListener('click', async () => {
       const confirmed = await confirmDialog({
@@ -3062,58 +3065,72 @@
    * ------------------------------------------------------------------ */
 
   function handleUpdateResult(result) {
-    if (!el.updateStatus) return;
-    if (!result?.ok) {
-      el.updateStatus.textContent = 'Could not check';
-      return;
+    state.update = result;
+    const { phase, latest, current, percent, error, canDownload, opened } = result;
+    const labels = {
+      checking: 'Checking for updates…',
+      current: `Up to date (${current})`,
+      available: `Update available: ${current} → ${latest}`,
+      downloading: `Downloading Aether ${latest} · ${percent}%`,
+      ready: opened ? 'Installer opened. Follow the Windows setup prompts.' : `Aether ${latest} is ready to install.`,
+      opening: 'Opening the installer…',
+    };
+    el.updateStatus.textContent = error || labels[phase] || 'Could not check for updates';
+    el.checkUpdates.disabled = ['checking', 'downloading', 'ready', 'opening'].includes(phase);
+    el.updateAction.hidden = !(phase === 'available' && canDownload || phase === 'ready');
+    el.updateAction.textContent = phase === 'ready' ? 'Run installer' : 'Download update';
+    el.viewRelease.hidden = !['available', 'error', 'ready'].includes(phase);
+    if (phase === 'available' && state.promptedVersion !== latest && el.modalRoot.hidden) {
+      state.promptedVersion = latest;
+      openModal({
+        title: 'Aether update available',
+        subtitle: `${current} → ${latest}`,
+        content: '<p class="modal-text">' + (canDownload
+          ? 'Download the Windows installer now. You can start setup when you are ready.'
+          : 'Open the GitHub release for downloads and release details.') + '</p>',
+        actions: [
+          { label: canDownload ? 'Download update' : 'View release', kind: 'primary',
+            onClick: () => { if (canDownload) void runUpdateAction(); else void openRelease(); } },
+          { label: 'Later', kind: 'ghost' },
+        ],
+      });
     }
-    el.updateStatus.textContent = result.available
-      ? `Update available: ${result.latestVersion}`
-      : `Up to date (${result.currentVersion})`;
   }
 
-  function showUpdateModal(result) {
-    openModal({
-      title: 'Aether update available',
-      subtitle: `${result.currentVersion} → ${result.latestVersion}`,
-      content: `<p class="modal-text">${esc(result.releaseName || 'A new Aether release is ready to download.')}</p>`,
-      actions: [
-        {
-          label: 'Open releases',
-          kind: 'primary',
-          onClick: async () => {
-            const opened = await api.openExternal(result.releaseUrl);
-            if (!opened.ok) toast(opened.message || 'Could not open GitHub', 'error');
-          },
-        },
-        { label: 'Later', kind: 'ghost' },
-      ],
-    });
+  async function openRelease() {
+    try {
+      const result = await api.openExternal(state.update.url);
+      if (!result.ok) throw new Error(result.message);
+    } catch (error) {
+      toast(error.message || 'Could not open GitHub', 'error');
+    }
+  }
+
+  async function runUpdateAction() {
+    try {
+      if (state.update.phase === 'ready') {
+        syncEditorToDoc();
+        const saved = await api.setSession({ docs: state.docs, active: state.active });
+        if (!saved) throw new Error('Could not save your open tabs before starting setup.');
+        await api.installUpdate();
+      } else if (state.update.phase === 'available') {
+        const result = await api.downloadUpdate();
+        if (result.phase === 'ready') toast('Download verified. Run the installer from Settings → About.', 'success');
+        else if (result.error) toast(result.error, 'error');
+      }
+    } catch (error) {
+      toast(error.message || 'Update action failed', 'error');
+    }
   }
 
   async function checkForUpdates(manual = false) {
-    if (!el.checkUpdates) return;
-    el.checkUpdates.disabled = true;
-    el.checkUpdates.textContent = 'Checking…';
-    if (el.updateStatus) el.updateStatus.textContent = 'Checking…';
-
-    const result = await api.checkForUpdates(manual).catch(() => ({
-      ok: false,
-      available: false,
-      error: 'Could not check for updates',
-    }));
-
-    el.checkUpdates.disabled = false;
-    el.checkUpdates.innerHTML =
-      '<svg class="icon" viewBox="0 0 24 24"><use href="#i-refresh"/></svg> Check now';
-    handleUpdateResult(result);
-
-    if (!result.ok) {
-      if (manual) toast(result.error || 'Could not check for updates', 'error');
-      return;
+    try {
+      const result = await api.checkForUpdates();
+      handleUpdateResult(result);
+      if (manual && result.phase === 'current') toast(`Aether ${result.current} is up to date`, 'success');
+    } catch (error) {
+      handleUpdateResult({ phase: 'error', error: error.message, url: 'https://github.com/GamingCat9439/Aether/releases' });
     }
-    if (result.available) showUpdateModal(result);
-    else if (manual) toast(`Aether ${result.currentVersion} is up to date`, 'success');
   }
 
   async function copyLoader(usePreview = false) {

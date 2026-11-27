@@ -1,11 +1,12 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, ipcMain, clipboard, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, clipboard, shell, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const { BridgeServer } = require('./bridge');
+const { createUpdater } = require('./updates');
 const { fetchHub } = require('./hub-providers');
 
 app.setName('Aether');
@@ -16,7 +17,7 @@ const runtime = {
   bridge: new BridgeServer(),
   bridgeError: '',
   loader: '',
-  updateCheck: null,
+  updater: null,
 };
 
 const THEMES = new Set(['graphite', 'midnight', 'forest', 'ember', 'plum', 'paper']);
@@ -31,11 +32,6 @@ const EXTERNAL_HOSTS = new Set([
   'github.com',
   'www.github.com',
 ]);
-
-const GITHUB_OWNER = 'GamingCat9439';
-const GITHUB_REPO = 'Aether';
-const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
-const GITHUB_LATEST_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 
 const DEFAULTS = {
   theme: 'graphite',
@@ -76,8 +72,10 @@ function writeJson(name, value) {
   try {
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
     fs.writeFileSync(storagePath(name), JSON.stringify(value, null, 2), 'utf8');
+    return true;
   } catch (error) {
     console.error(`Could not write ${name}:`, error.message);
+    return false;
   }
 }
 
@@ -197,75 +195,6 @@ function send(channel, payload) {
   if (runtime.win && !runtime.win.isDestroyed()) {
     runtime.win.webContents.send(channel, payload);
   }
-}
-
-function versionParts(version) {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/i.exec(String(version || '').trim());
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
-}
-
-function isNewerVersion(latest, current) {
-  const left = versionParts(latest);
-  const right = versionParts(current);
-  if (!left || !right) return false;
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] > right[index];
-  }
-  return false;
-}
-
-async function checkForUpdates(manual = false) {
-  if (runtime.updateCheck) return runtime.updateCheck;
-
-  runtime.updateCheck = (async () => {
-    try {
-      const response = await fetch(GITHUB_LATEST_API_URL, {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'User-Agent': `Aether-${app.getVersion()}`,
-        },
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (!response.ok) {
-        throw new Error(response.status === 403
-          ? 'GitHub update checks are temporarily unavailable'
-          : `GitHub returned HTTP ${response.status}`);
-      }
-
-      const release = await response.json();
-      const latestVersion = String(release.tag_name || '').trim();
-      const available = Boolean(latestVersion && isNewerVersion(latestVersion, app.getVersion()));
-      const result = {
-        ok: true,
-        available,
-        currentVersion: app.getVersion(),
-        latestVersion: latestVersion || 'Unknown',
-        releaseName: String(release.name || latestVersion || 'Aether release'),
-        releaseUrl: String(release.html_url || GITHUB_RELEASES_URL),
-        publishedAt: String(release.published_at || ''),
-        checkedAt: new Date().toISOString(),
-      };
-
-      if (available && !manual) send('app:update-available', result);
-      return result;
-    } catch (error) {
-      return {
-        ok: false,
-        available: false,
-        currentVersion: app.getVersion(),
-        latestVersion: 'Unknown',
-        releaseName: '',
-        releaseUrl: GITHUB_RELEASES_URL,
-        checkedAt: new Date().toISOString(),
-        error: error?.message || 'Could not check for updates',
-      };
-    }
-  })();
-
-  const result = await runtime.updateCheck;
-  runtime.updateCheck = null;
-  return result;
 }
 
 async function applyBridge() {
@@ -462,8 +391,7 @@ function registerIpc() {
 
   ipcMain.handle('session:get', () => sanitizeSession(readJson('session.json', null)));
   ipcMain.handle('session:set', (_event, session) => {
-    writeJson('session.json', sanitizeSession(session));
-    return true;
+    return writeJson('session.json', sanitizeSession(session));
   });
 
   ipcMain.handle('scripts:get', () => sanitizeScripts(readJson('scripts.json', [])));
@@ -495,7 +423,9 @@ function registerIpc() {
     return { ok: !result, message: result };
   });
 
-  ipcMain.handle('app:check-updates', async (_event, manual) => checkForUpdates(Boolean(manual)));
+  ipcMain.handle('app:check-updates', () => runtime.updater.check());
+  ipcMain.handle('app:download-update', () => runtime.updater.download());
+  ipcMain.handle('app:install-update', () => runtime.updater.install());
 
   ipcMain.handle('clipboard:write', (_event, text) => {
     clipboard.writeText(String(text || '').slice(0, 2 * 1024 * 1024));
@@ -610,6 +540,15 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   loadConfig();
   wireBridge();
+  runtime.updater = createUpdater({
+    version: app.getVersion(),
+    windowsInstall: app.isPackaged && process.platform === 'win32',
+    arch: process.arch,
+    fetch: (url, options) => net.fetch(url, options),
+    tempDir: storagePath('updates'),
+    openInstaller: file => shell.openPath(file),
+    notify: state => send('app:update-status', state),
+  });
   registerIpc();
   createWindow();
 
@@ -619,8 +558,7 @@ app.whenReady().then(async () => {
     send('bridge:state', bridgeState());
   }
 
-  setTimeout(() => checkForUpdates(), 2500);
-  setInterval(() => checkForUpdates(), 6 * 60 * 60 * 1000);
+  setInterval(() => runtime.updater.check(), 6 * 60 * 60 * 1000).unref();
 });
 
 app.on('window-all-closed', async () => {
